@@ -1,40 +1,38 @@
 import User from "../models/User.js";
 import OTP from "../models/OTP.js";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 
 /* ================================
    HELPER: GENERATE JWT
 ================================ */
-const generateToken = (user) =>
-  jwt.sign(
+const generateToken = (user) => {
+  return jwt.sign(
     {
-      id: user._id,
-      email: user.email,
-      role: user.role,
-      gateId: user.gateId || null,
+      id: user._id.toString(),
+      role: user.role,            
+      gateId: user.gateId || null 
     },
     process.env.JWT_SECRET,
     { expiresIn: "1d" }
   );
+};
 
 /* ================================
-   PASSWORD LOGIN
+   LOGIN
 ================================ */
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: "Email and password required" });
 
     const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
 
-    // 🔐 AUTO-ASSIGN GATE FOR SECURITY
+    // AUTO-ASSIGN GATE FOR SECURITY
     if (user.role === "security" && !user.gateId) {
       user.gateId = `GATE-${Math.floor(Math.random() * 10) + 1}`;
       await user.save();
@@ -53,7 +51,7 @@ export const login = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("Login error:", err);
+    console.error("LOGIN ERROR:", err);
     res.status(500).json({ error: "Login failed" });
   }
 };
@@ -75,12 +73,13 @@ export const sendOtp = async (req, res) => {
     await OTP.create({
       email,
       otp,
-      expiresAt: Date.now() + 2 * 60 * 1000,
+      expiresAt: Date.now() + 2 * 60 * 1000, // 2 minutes
     });
 
-    console.log("OTP:", otp);
-    res.json({ message: "OTP sent" });
+    console.log("OTP SENT:", email, otp);
+    res.json({ message: "OTP sent successfully" });
   } catch (err) {
+    console.error("SEND OTP ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
@@ -91,11 +90,10 @@ export const sendOtp = async (req, res) => {
 export const verifyOtp = async (req, res) => {
   try {
     const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ error: "Email and OTP required" });
 
     const record = await OTP.findOne({ email, otp });
-    if (!record) {
-      return res.status(400).json({ error: "Invalid or expired OTP" });
-    }
+    if (!record) return res.status(400).json({ error: "Invalid OTP" });
 
     if (record.expiresAt < Date.now()) {
       await OTP.deleteMany({ email });
@@ -103,13 +101,11 @@ export const verifyOtp = async (req, res) => {
     }
 
     const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(400).json({ error: "User not found" });
-    }
+    if (!user) return res.status(404).json({ error: "User not found" });
 
     await OTP.deleteMany({ email });
 
-    // 🔐 AUTO-ASSIGN GATE FOR SECURITY
+    // AUTO-ASSIGN GATE FOR SECURITY
     if (user.role === "security" && !user.gateId) {
       user.gateId = `GATE-${Math.floor(Math.random() * 10) + 1}`;
       await user.save();
@@ -128,7 +124,7 @@ export const verifyOtp = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("Verify OTP error:", err);
+    console.error("VERIFY OTP ERROR:", err);
     res.status(500).json({ error: "OTP verification failed" });
   }
 };
@@ -154,9 +150,9 @@ export const resendOtp = async (req, res) => {
     });
 
     console.log("OTP RESENT:", email, otp);
-    res.json({ message: "OTP resent" });
+    res.json({ message: "OTP resent successfully" });
   } catch (err) {
-    console.error("Resend OTP error:", err);
+    console.error("RESEND OTP ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
@@ -167,22 +163,12 @@ export const resendOtp = async (req, res) => {
 export const register = async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
-
-    if (!name || !email || !password || !role) {
-      return res.status(400).json({ error: "All fields required" });
-    }
+    if (!name || !email || !password || !role) return res.status(400).json({ error: "All fields required" });
 
     const exists = await User.findOne({ email });
-    if (exists) {
-      return res.status(400).json({ error: "User already exists" });
-    }
+    if (exists) return res.status(400).json({ error: "User already exists" });
 
-    const user = await User.create({
-      name,
-      email,
-      password,
-      role,
-    });
+    const user = await User.create({ name, email, password, role });
 
     res.status(201).json({
       message: "User registered successfully",
@@ -191,11 +177,11 @@ export const register = async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
-        gateId: user.gateId || null,
+        gateId: user.gateId,
       },
     });
   } catch (err) {
-    console.error("Register error:", err);
+    console.error("REGISTER ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 };

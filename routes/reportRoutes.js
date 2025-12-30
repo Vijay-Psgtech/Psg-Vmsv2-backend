@@ -45,6 +45,31 @@ router.get(
   }
 );
 
+router.get("/overstay", requireAuth, requireRole("admin"), async (req, res) => {
+  const data = await Visitor.aggregate([
+    {
+      $match: {
+        status: "IN",
+        allowedUntil: { $lt: new Date() },
+      },
+    },
+    {
+      $project: {
+        name: 1,
+        gate: 1,
+        host: 1,
+        overstayMinutes: {
+          $divide: [
+            { $subtract: [new Date(), "$allowedUntil"] },
+            60000,
+          ],
+        },
+      },
+    },
+  ]);
+
+  res.json(data);
+});
+
+
 export default router;
-
-

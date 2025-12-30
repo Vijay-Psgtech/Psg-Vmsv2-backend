@@ -1,40 +1,34 @@
 import crypto from "crypto";
 
-
-const SECRET = process.env.QR_SECRET;
-
-
 export function encryptQR(data) {
-const iv = crypto.randomBytes(16);
-const cipher = crypto.createCipheriv(
-"aes-256-cbc",
-Buffer.from(SECRET),
-iv
-);
+  const QR_SECRET = process.env.QR_SECRET;
+  if (!QR_SECRET) throw new Error("QR_SECRET missing");
 
+  const iv = crypto.randomBytes(16);
+  const key = Buffer.from(QR_SECRET.padEnd(32));
 
-let encrypted = cipher.update(JSON.stringify(data));
-encrypted = Buffer.concat([encrypted, cipher.final()]);
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
 
+  let encrypted = cipher.update(JSON.stringify(data), "utf8", "hex");
+  encrypted += cipher.final("hex");
 
-return iv.toString("hex") + ":" + encrypted.toString("hex");
+  return `${iv.toString("hex")}:${encrypted}`;
 }
 
+export function decryptQR(payload) {
+  const QR_SECRET = process.env.QR_SECRET;
+  if (!QR_SECRET) throw new Error("QR_SECRET missing");
 
-export function decryptQR(text) {
-const [ivHex, encryptedHex] = text.split(":");
+  const [ivHex, encryptedHex] = payload.split(":");
 
+  const iv = Buffer.from(ivHex, "hex");
+  const encryptedText = Buffer.from(encryptedHex, "hex");
 
-const decipher = crypto.createDecipheriv(
-"aes-256-cbc",
-Buffer.from(SECRET),
-Buffer.from(ivHex, "hex")
-);
+  const key = Buffer.from(QR_SECRET.padEnd(32));
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
 
+  let decrypted = decipher.update(encryptedText, "hex", "utf8");
+  decrypted += decipher.final("utf8");
 
-let decrypted = decipher.update(Buffer.from(encryptedHex, "hex"));
-decrypted = Buffer.concat([decrypted, decipher.final()]);
-
-
-return JSON.parse(decrypted.toString());
+  return JSON.parse(decrypted);
 }

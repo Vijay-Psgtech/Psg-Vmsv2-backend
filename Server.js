@@ -1,10 +1,12 @@
 /***************************************************************
  * VPASS — Production Server
  * Author: Sarath Kannan
+ * ✅ UPDATED: Added Super Admin Routes, Alert System, Overstay Monitoring
  ***************************************************************/
-
-import express from "express";
 import dotenv from "dotenv";
+dotenv.config();
+import express from "express";
+
 import morgan from "morgan";
 import cors from "cors";
 import helmet from "helmet";
@@ -26,15 +28,19 @@ import notifyRoutes from "./routes/notifyRoutes.js";
 import twilioWebhook from "./routes/twilioWebhook.js";
 import auditRoutes from "./routes/auditRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
+import alertRoutes from "./routes/alertRoutes.js";
+import superAdminRoutes from "./routes/superAdminRoutes.js"; // ✅ NEW
 
+import "./utils/mailer.js"; // 🔔 INITIALIZE SMTP
+
+/* ✅ Import Overstay Watcher */
+import { startOverstayWatcher } from "./utils/overstayWatcher.js";
 
 /* MODELS */
 import Visitor from "./models/Visitor.js";
 
 /* SOCKET HANDLER */
 import socketHandler from "./socket.js";
-
-dotenv.config();
 
 /* ----------------------------------------------------------- */
 const app = express();
@@ -48,7 +54,7 @@ app.set("trust proxy", 1);
 /* MIDDLEWARE */
 const corsOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173")
   .split(",")
-  .map(o => o.trim());
+  .map((o) => o.trim());
 
 app.use(helmet());
 app.use(morgan("dev"));
@@ -75,11 +81,11 @@ const io = new Server(server, {
     origin: corsOrigins,
     credentials: true,
   },
-  transports: ["websocket"],
+  transports: ["websocket", "polling"],
   allowUpgrades: true,
 });
 
-/* 🔌 ATTACH SOCKET TO REQUEST (ONLY ONCE) */
+/* 🔌 ATTACH SOCKET TO REQUEST */
 app.use((req, res, next) => {
   req.io = io;
   next();
@@ -88,14 +94,16 @@ app.use((req, res, next) => {
 /* 🔌 INITIALIZE SOCKET HANDLER */
 socketHandler(io);
 
+/* ✅ Start Overstay Monitoring with Socket.IO */
+startOverstayWatcher(io);
+console.log("⚠️ Overstay monitoring initialized");
+
 /* ----------------------------------------------------------- */
 /* SOCKET HELPER */
 export const emitVisitorUpdate = async () => {
   if (mongoose.connection.readyState !== 1) return;
 
-  const visitors = await Visitor.find()
-    .sort({ createdAt: -1 })
-    .limit(100);
+  const visitors = await Visitor.find().sort({ createdAt: -1 }).limit(100);
 
   io.emit("visitors:update", visitors);
 };
@@ -110,10 +118,7 @@ function getTwilioClient() {
   }
 
   if (!twilioClient) {
-    twilioClient = twilio(
-      process.env.TWILIO_ACCOUNT_SID,
-      process.env.TWILIO_AUTH_TOKEN
-    );
+    twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
   }
 
   return twilioClient;
@@ -142,7 +147,27 @@ app.use("/api/buildings", buildingRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/notify", notifyRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/alert", alertRoutes);
+app.use("/api/superadmin", superAdminRoutes); // ✅ NEW: Super Admin Routes
+
 app.use("/webhook", twilioWebhook);
+
+/* ----------------------------------------------------------- */
+/* ✅ Health Check with More Info */
+app.get("/", (req, res) => {
+  res.json({
+    status: "OK",
+    service: "VPASS Visitor Management API",
+    version: "2.1.0", // ✅ Updated version
+    features: {
+      socketIO: true,
+      overstayMonitoring: true,
+      alertSystem: true,
+      superAdminPanel: true, // ✅ NEW
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
 
 /* ----------------------------------------------------------- */
 /* 404 */
@@ -160,6 +185,14 @@ app.use((err, req, res, next) => {
   });
 });
 
+
+// Add this to your server.js for testing
+app.get("/api/test-email", async (req, res) => {
+  const { sendTestEmail } = await import("./utils/mailer.js");
+  const result = await sendTestEmail("sk123Sarath@gmail.com");
+  res.json({ success: result, message: result ? "Email sent!" : "Failed to send" });
+});
+
 /* ----------------------------------------------------------- */
 /* START SERVER */
 const PORT = process.env.PORT || 5000;
@@ -169,7 +202,7 @@ async function startServer() {
     await mongoose.connect(process.env.MONGO_URI);
     console.log("✅ MongoDB connected");
 
-    /* ⏳ AUTO EXPIRE VISITORS */
+    /* ⏳ AUTO EXPIRE VISITORS (every 15 minutes) */
     cron.schedule("*/15 * * * *", async () => {
       if (mongoose.connection.readyState !== 1) return;
 
@@ -187,9 +220,20 @@ async function startServer() {
       }
     });
 
-    server.listen(PORT, () =>
-      console.log(`🚀 Server running at http://localhost:${PORT}`)
-    );
+    /* ✅ Enhanced startup message */
+    server.listen(PORT, () => {
+      console.log(`
+╔════════════════════════════════════════════════╗
+║   🚀 VPASS SERVER RUNNING                      ║
+╠════════════════════════════════════════════════╣
+║   📡 URL: http://localhost:${PORT.toString().padEnd(21)}║
+║   🔌 Socket.IO: ENABLED                        ║
+║   ⚠️  Overstay Monitor: ACTIVE                 ║
+║   🔔 Alert System: READY                       ║
+║   👑 Super Admin: ENABLED                      ║
+╚════════════════════════════════════════════════╝
+      `);
+    });
   } catch (err) {
     console.error("❌ Startup failed:", err.message);
     process.exit(1);
@@ -201,8 +245,17 @@ startServer();
 /* ----------------------------------------------------------- */
 /* GRACEFUL SHUTDOWN */
 process.on("SIGINT", async () => {
-  console.log("🛑 Shutting down...");
+  console.log("\n🛑 Shutting down gracefully...");
   await mongoose.disconnect();
   io.close();
-  server.close(() => process.exit(0));
+  server.close(() => {
+    console.log("✅ Server closed");
+    process.exit(0);
+  });
+});
+
+/* ✅ Handle uncaught errors */
+process.on("unhandledRejection", (err) => {
+  console.error("❌ Unhandled Rejection:", err);
+  process.exit(1);
 });
