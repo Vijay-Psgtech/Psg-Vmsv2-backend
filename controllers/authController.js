@@ -1,6 +1,7 @@
 import User from "../models/User.js";
 import OTP from "../models/OTP.js";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 
 /* ================================
    HELPER: GENERATE JWT
@@ -28,7 +29,7 @@ export const login = async (req, res) => {
     const user = await User.findOne({ email });
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-    const isMatch = await user.comparePassword(password);
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
 
     // AUTO-ASSIGN GATE FOR SECURITY
