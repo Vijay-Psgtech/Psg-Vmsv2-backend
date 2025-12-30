@@ -317,7 +317,7 @@ const router = express.Router();
    MOCK DATA FOR FRONTEND
 ========================================================= */
 const employees = [
-  { _id: "1", name: "John Smith", email: "john@company.com", department: "Engineering" },
+  { _id: "1", name: "John Smith", email: "rvk.its@psgtech.ac.in", department: "Engineering" },
   { _id: "2", name: "Sarah Johnson", email: "sarah@company.com", department: "HR" },
   { _id: "3", name: "Michael Brown", email: "michael@company.com", department: "Sales" },
   { _id: "4", name: "Emily Davis", email: "emily@company.com", department: "Marketing" },
@@ -415,7 +415,7 @@ async function sendHostApprovalEmail(visitor) {
     const rejectUrl = `${process.env.BASE_URL}/api/visitor/email-reject/${visitor.approvalToken}`;
 
     await transporter.sendMail({
-      from: `"Visitor Management System" <${process.env.SMTP_USER}>`,
+      from: `"Visitor Management System" <${process.env.EMAIL_USER}>`,
       to: visitor.hostEmail,
       subject: `🔔 Visitor Approval Required - ${visitor.name}`,
       html: `
@@ -722,8 +722,8 @@ router.post("/approve/:id", requireAuth, requireRole("admin"), async (req, res) 
 async function sendVisitorApprovedEmail(visitor) {
   try {
     await transporter.sendMail({
-      from: `"Visitor Management System" <${process.env.SMTP_USER}>`,
-      to: [visitor.email, visitor.hostEmail, "security@company.com"],
+      from: `"Visitor Management System" <${process.env.EMAIL_USER}>`,
+      to: [visitor.email, "security@company.com"],
       subject: `✅ Visitor Pass Approved - ${visitor.name}`,
       html: `
         <!DOCTYPE html>
@@ -823,7 +823,7 @@ async function sendVisitorApprovedEmail(visitor) {
 async function sendVisitorRejectedEmail(visitor) {
   try {
     await transporter.sendMail({
-      from: `"Visitor Management System" <${process.env.SMTP_USER}>`,
+      from: `"Visitor Management System" <${process.env.EMAIL_USER}>`,
       to: visitor.email,
       subject: `❌ Visitor Request Not Approved - ${visitor.name}`,
       html: `

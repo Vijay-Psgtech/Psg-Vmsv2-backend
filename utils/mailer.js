@@ -2,6 +2,8 @@
 
 // utils/mailer.js
 import nodemailer from "nodemailer";
+import dotenv from "dotenv";
+dotenv.config();
 
 /**
  * Create Gmail transporter with proper configuration
@@ -10,8 +12,8 @@ import nodemailer from "nodemailer";
 export const transporter = nodemailer.createTransport({
   service: 'gmail', // ✅ Use service instead of host
   auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS, // Gmail App Password
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS, // Gmail App Password
   },
 });
 
@@ -19,17 +21,6 @@ export const transporter = nodemailer.createTransport({
  * Alternative configuration if the above doesn't work
  * Uncomment this and comment out the above
  */
-/*
-export const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465, // ✅ Changed to 465 for SSL
-  secure: true, // ✅ Use SSL
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-*/
 
 /**
  * Verify SMTP connection on startup
@@ -53,7 +44,7 @@ transporter.verify((err, success) => {
 export async function sendTestEmail(toEmail) {
   try {
     const info = await transporter.sendMail({
-      from: `"Visitor Management System" <${process.env.SMTP_USER}>`,
+      from: `"Visitor Management System" <${process.env.EMAIL_USER}>`,
       to: toEmail,
       subject: "✅ Test Email - VMS System",
       html: `
@@ -84,7 +75,7 @@ export async function sendTestEmail(toEmail) {
 export async function sendCheckInNotification(visitor) {
   try {
     const info = await transporter.sendMail({
-      from: `"VPASS - Visitor Management" <${process.env.SMTP_USER}>`,
+      from: `"VPASS - Visitor Management" <${process.env.EMAIL_USER}>`,
       to: [visitor.hostEmail, visitor.email].filter(Boolean).join(','),
       subject: `🚪 Visitor Checked In - ${visitor.name}`,
       html: `
@@ -143,7 +134,7 @@ export async function sendCheckOutNotification(visitor) {
       : `${minutes} minutes`;
 
     const info = await transporter.sendMail({
-      from: `"VPASS - Visitor Management" <${process.env.SMTP_USER}>`,
+      from: `"VPASS - Visitor Management" <${process.env.EMAIL_USER}>`,
       to: [visitor.hostEmail, visitor.email].filter(Boolean).join(','),
       subject: `👋 Visitor Checked Out - ${visitor.name}`,
       html: `
@@ -197,7 +188,7 @@ export async function sendOverstayAlert(visitor, overstayMinutes) {
     const securityEmail = process.env.SECURITY_EMAIL || "security@company.com";
     
     const info = await transporter.sendMail({
-      from: `"VPASS - Security Alert" <${process.env.SMTP_USER}>`,
+      from: `"VPASS - Security Alert" <${process.env.EMAIL_USER}>`,
       to: [securityEmail, visitor.hostEmail].filter(Boolean).join(','),
       subject: `⚠️ URGENT: Overstay Alert - ${visitor.name} (${overstayMinutes} min)`,
       html: `
