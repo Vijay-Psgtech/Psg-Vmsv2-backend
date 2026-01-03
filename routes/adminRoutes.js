@@ -96,5 +96,15 @@ router.get(
   }
 );
 
+router.get('/users', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const users = await User.find().select('-password');
+    res.json(users);
+  } catch (err) {
+    console.error('Fetch users error:', err);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
 export default router;
 
