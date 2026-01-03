@@ -1,4 +1,5 @@
 import express from "express";
+import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import Visitor from "../models/Visitor.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -105,6 +106,40 @@ router.get('/users', requireAuth, requireRole('admin', 'superadmin'), async (req
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 });
+
+router.post('/userSave', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const { name, email, phone, password, role, isActive, department }  = req.body;
+    if (!name || !email || !role) {
+      return res.status(400).json({ error: 'Name, email, and role are required' });
+    }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Email already in use' });
+    }
+
+    const hashPassword = await bcrypt.hash(password, 10);
+
+    const newUser = new User({
+      name,
+      email,
+      phone,
+      password: hashPassword,
+      role,
+      isActive: isActive !== undefined ? isActive : true,
+      department,
+    });
+
+    await newUser.save();
+    
+    res.json({ message: 'User created successfully', user: { id: newUser._id, name: newUser.name, email: newUser.email, role: newUser.role } });
+
+  } catch (err) {
+    console.error('User save error:', err);
+    res.status(500).json({ error: 'Failed to save user' });
+  }
+})
 
 export default router;
 
