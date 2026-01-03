@@ -97,6 +97,10 @@ router.get(
   }
 );
 
+/* =========================================================
+   User Management (Admin)
+========================================================= */
+
 router.get('/users', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
   try {
     const users = await User.find().select('-password');
@@ -138,6 +142,63 @@ router.post('/userSave', requireAuth, requireRole('admin', 'superadmin'), async 
   } catch (err) {
     console.error('User save error:', err);
     res.status(500).json({ error: 'Failed to save user' });
+  }
+});
+
+router.put('/userUpdate/:id', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { name, phone, email, department } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { name, phone, email, department },
+      { new: true }
+    );
+
+    res.json({ message: 'User updated successfully', user: updatedUser });
+  } catch (err) {
+    console.error('User update error:', err);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+router.delete('userDelete/:id', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const user = await User.findByIdAndDelete(userId);
+    if(!user) {
+      return res.status(404).json({ error: "User not found" });
+
+    }
+    res.json({ message: "User deleted successfully" });
+  }
+  catch (err) {
+    console.error('User delete error:', err);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+router.patch('/userStatus/:id', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { isActive } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    user.isActive = isActive;
+    await user.save();
+  } catch (err) {
+    console.error('User status update error:', err);
+    res.status(500).json({ error: 'Failed to update user status' });
   }
 })
 
