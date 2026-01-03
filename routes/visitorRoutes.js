@@ -884,4 +884,14 @@ router.get("/badge/:id", requireAuth, async (req, res) => {
   }
 });
 
+router.get('/visitorList', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+  try{
+    const visitors = await Visitor.find().sort({ createdAt: -1 });
+    res.json(visitors);
+  } catch (err) {
+    console.error('Fetch visitors error:', err);
+    res.status(500).json({ error: 'Failed to fetch visitors' });
+  }
+})
+
 export default router;
