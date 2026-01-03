@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import Visitor from "../models/Visitor.js";
 import Departments from "../models/Departments.js";
+import Host from "../models/Host.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -264,6 +265,35 @@ router.put('/departmentUpdate/:id', requireAuth, requireRole('admin', 'superadmi
   } catch (err) {
     console.error('Department update error:', err);
     res.status(500).json({ error: 'Failed to update department' });
+  }
+});
+
+router.delete('/departmentDelete/:id', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const departmentId = req.params.id;
+    const department = await Departments.findByIdAndDelete(departmentId);
+    if(!department) {
+      return res.status(404).json({ error: "Department not found" });
+      
+    }
+    res.json({ message: "Department deleted successfully" });
+  }
+  catch (err) {
+    console.error('Department delete error:', err);
+    res.status(500).json({ error: 'Failed to delete department' });
+  }
+});
+
+/* =========================================================
+   Host Management (Admin)
+========================================================= */
+router.get('/hosts', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const hosts = await Host.find();
+    res.json(hosts);
+  } catch (err) {
+    console.error('Fetch hosts error:', err);
+    res.status(500).json({ error: 'Failed to fetch hosts' });
   }
 });
 
