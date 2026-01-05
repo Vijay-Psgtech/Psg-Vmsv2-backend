@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import Visitor from "../models/Visitor.js";
 import Departments from "../models/Departments.js";
 import Host from "../models/Host.js";
+import Gate from "../models/Gate.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -285,16 +286,44 @@ router.delete('/departmentDelete/:id', requireAuth, requireRole('admin', 'supera
 });
 
 /* =========================================================
-   Host Management (Admin)
+   Gate Management (Admin)
 ========================================================= */
-router.get('/hosts', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+
+router.get('/gates', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
   try {
-    const hosts = await Host.find();
-    res.json(hosts);
+    const gates = await Gate.find();
+    res.json(gates);
   } catch (err) {
-    console.error('Fetch hosts error:', err);
-    res.status(500).json({ error: 'Failed to fetch hosts' });
+    console.error('Fetch gates error:', err);
+    res.status(500).json({ error: 'Failed to fetch gates' });
   }
 });
+
+router.post('/gateSave', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+  try {
+    const { name, code } = req.body;
+    if (!name || !code) {
+      return res.status(400).json({ error: 'Name and code are required' });
+    }
+
+    const existingGate = await Gate.findOne({ code });
+    if (existingGate) {
+      return res.status(400).json({ error: 'Gate code already in use' });
+    }
+
+    const newGate = new Gate({
+      name,
+      code,
+    });
+
+    await newGate.save();
+
+    res.json({ message: 'Gate created successfully', gate: newGate });
+  } catch (err) {
+    console.error('Gate save error:', err);
+    res.status(500).json({ error: 'Failed to save gate' });
+  }
+});
+
 
 export default router;
