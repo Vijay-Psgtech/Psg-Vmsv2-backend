@@ -884,7 +884,7 @@ router.get("/badge/:id", requireAuth, async (req, res) => {
   }
 });
 
-router.get('/visitorList', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
+router.get('/visitorList', requireAuth, requireRole('admin', 'superadmin', 'security'), async (req, res) => {
   try{
     const visitors = await Visitor.find().sort({ createdAt: -1 });
     res.json(visitors);
