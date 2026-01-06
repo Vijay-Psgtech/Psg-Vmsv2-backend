@@ -180,35 +180,40 @@ router.post(
       const approvalToken = crypto.randomBytes(32).toString("hex");
 
       // Create visitor
-    const visitor = await Visitor.create({
-      visitorId: `VIS-${Date.now()}`,
-      name,
-      phone,
-      email,
-      company: company || "",
-      purpose: purpose || "",
-      host,
-      hostEmail,
-      gate: String(gate),
-      allowedUntil: parsedDate,
-      expectedDuration: expectedDuration || 120,
-      vehicleNumber: vehicleNumber || "",
-      status: "PENDING",
-      qrExpiresAt: parsedDate,
-      approvalToken,
-      approvalExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
-      history: [{ action: "CREATED_RECEPTION", note: "Visitor created from reception Dashboard" }],
-    });
+      const visitor = await Visitor.create({
+        visitorId: `VIS-${Date.now()}`,
+        name,
+        phone,
+        email,
+        company: company || "",
+        purpose: purpose || "",
+        host,
+        hostEmail,
+        gate: String(gate),
+        allowedUntil: parsedDate,
+        expectedDuration: expectedDuration || 120,
+        vehicleNumber: vehicleNumber || "",
+        status: "PENDING",
+        qrExpiresAt: parsedDate,
+        approvalToken,
+        approvalExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+        history: [
+          {
+            action: "CREATED_RECEPTION",
+            note: "Visitor created from reception Dashboard",
+          },
+        ],
+      });
 
-    // Send approval email to host
-    await sendHostApprovalEmail(visitor);
+      // Send approval email to host
+      await sendHostApprovalEmail(visitor);
 
-    res.status(201).json({
-      success: true,
-      visitorId: visitor.visitorId,
-      message: "Visitor request submitted successfully. Awaiting host approval.",
-    });
-
+      res.status(201).json({
+        success: true,
+        visitorId: visitor.visitorId,
+        message:
+          "Visitor request submitted successfully. Awaiting host approval.",
+      });
     } catch (err) {
       res.status(500).json({ message: "Create failed" });
     }
@@ -797,6 +802,8 @@ router.post(
 
       await visitor.save();
 
+      await sendVisitorCheckedInEmailtoHost(visitor);
+
       // Emit socket update
       if (req.io) {
         req.io.emit(
@@ -813,9 +820,96 @@ router.post(
   }
 );
 
+async function sendVisitorCheckedInEmailtoHost(visitor) {
+  try {
+    const checkOutUrl = `${process.env.BASE_URL}/api/visitor/check-out/${visitor._id}`;
+
+    await transporter.sendMail({
+      from: `"Visitor Management System" <${process.env.EMAIL_USER}>`,
+      to: visitor.hostEmail,
+      subject: `🔔 Visitor Checked In - ${visitor.name}`,
+      html: `
+        <div style="font-family: 'Inter', 'Segoe UI', Roboto, Arial, sans-serif; background: #eef2f7; padding: 40px;">
+          <div style="max-width: 640px; margin: 0 auto; background: #ffffff; border-radius: 14px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.08);">
+            
+            <!-- Top Accent Bar -->
+            <div style="height: 6px; background: linear-gradient(90deg, #3b82f6, #6366f1, #8b5cf6);"></div>
+
+            <!-- Header -->
+            <div style="text-align: center; padding: 28px 20px 12px;">
+              <img src="https://cdn-icons-png.flaticon.com/512/906/906343.png" alt="Visitor Icon" width="60" style="margin-bottom: 8px;" />
+              <h2 style="color: #111827; font-size: 22px; margin: 0;">Visitor Check-In Alert</h2>
+              <p style="color: #6b7280; font-size: 14px; margin-top: 6px;">Your guest has arrived at the gate</p>
+            </div>
+
+            <!-- Body -->
+            <div style="padding: 0 32px 32px; color: #1f2937;">
+              <div style="background: #f9fafb; border-radius: 10px; padding: 18px 20px; border: 1px solid #e5e7eb; margin-top: 20px;">
+                <p style="margin: 0; font-size: 15px;">Dear <strong>${visitor.host}</strong>,</p>
+                <p style="margin: 12px 0 18px; font-size: 15px; line-height: 1.6;">
+                  Your visitor <strong style="color: #111827;">${visitor.name}</strong> has successfully checked in at the security gate.
+                </p>
+
+                <h3 style="font-size: 15px; color: #374151; margin: 0 0 10px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px;">
+                  Visitor Details
+                </h3>
+                <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                  <tr>
+                    <td style="padding: 8px 0; color: #6b7280;">Visitor ID:</td>
+                    <td style="padding: 8px 0; text-align: right; font-weight: 600;">${visitor.visitorId}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 0; color: #6b7280;">Name:</td>
+                    <td style="padding: 8px 0; text-align: right; font-weight: 600;">${visitor.name}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 0; color: #6b7280;">Check-In Time:</td>
+                    <td style="padding: 8px 0; text-align: right; font-weight: 600;">${new Date(visitor.checkInTime).toLocaleString()}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 0; color: #6b7280;">Gate:</td>
+                    <td style="padding: 8px 0; text-align: right; font-weight: 600;">${visitor.gate}</td>
+                  </tr>
+                </table>
+              </div>
+
+              <!-- CTA Button -->
+              <div style="text-align: center; margin-top: 36px;">
+                <a href="${checkOutUrl}"
+                  style="display: inline-block; background: linear-gradient(90deg, #3b82f6, #6366f1); color: #ffffff;
+                          padding: 14px 36px; border-radius: 8px; text-decoration: none; font-weight: 600; letter-spacing: 0.3px;
+                          box-shadow: 0 3px 10px rgba(99,102,241,0.3);">
+                  🔓 Check Out Visitor
+                </a>
+              </div>
+
+              <!-- Signature -->
+              <div style="margin-top: 40px; text-align: center; font-size: 13px; color: #6b7280;">
+                <p style="margin: 0;">Kind regards,</p>
+                <p style="font-weight: 600; color: #111827; margin: 4px 0;">Visitor Management System</p>
+              </div>
+            </div>
+
+            <!-- Footer -->
+            <div style="background: #f3f4f6; text-align: center; font-size: 12px; color: #9ca3af; padding: 12px 0;">
+              <p style="margin: 0;">This is an automated message. Please do not reply.</p>
+            </div>
+          </div>
+        </div>
+      `,
+    });
+
+    console.log("✅ Visitor checked-in email sent to host:", visitor.hostEmail);
+  } catch (err) {
+    console.error("❌ Failed to send checked-in email to host:", err.message);
+  }
+}
+
 /* =========================================================
    CHECK-OUT
 ========================================================= */
+
+// check-out route from security dashboard
 router.post(
   "/check-out/:id",
   requireAuth,
@@ -866,6 +960,48 @@ router.post(
   }
 );
 
+// check-out route from host email
+router.get("/check-out/:id", async (req, res) => {
+  try {
+    const visitor = await Visitor.findById(req.params.id);
+
+    if (!visitor) {
+      return res.status(404).send("Visitor not found");
+    }
+    if (!["IN", "OVERSTAY"].includes(visitor.status)) {
+      return res.status(400).send("Visitor not checked in");
+    }
+
+    visitor.status = "OUT";
+    visitor.checkOutTime = new Date();
+    if (visitor.checkInTime) {
+      visitor.actualDuration = Math.floor(
+        (new Date() - new Date(visitor.checkInTime)) / 60000
+      );
+    }
+    visitor.history.push({
+      action: "CHECKED_OUT",
+      note: "Checked out via host email link",
+    });
+    await visitor.save();
+
+    res.send(`
+      <html>
+        <body style="font-family: Arial; text-align: center; padding: 50px;">
+
+          <h2 style="color: #10b981;">✅ Visitor Checked Out Successfully!</h2>
+          <p>Visitor <strong>${visitor.name}</strong> (ID: ${visitor.visitorId}) has been checked out.</p>
+          <p style="color: #6b7280; margin-top: 30px;">You can close this window.</p>
+          
+        </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error("Check-out via email error:", err);
+    res.status(500).send("Check-out failed");
+  }
+});
+
 /* =========================================================
    BADGE DOWNLOAD
 ========================================================= */
@@ -884,14 +1020,19 @@ router.get("/badge/:id", requireAuth, async (req, res) => {
   }
 });
 
-router.get('/visitorList', requireAuth, requireRole('admin', 'superadmin', 'security'), async (req, res) => {
-  try{
-    const visitors = await Visitor.find().sort({ createdAt: -1 });
-    res.json(visitors);
-  } catch (err) {
-    console.error('Fetch visitors error:', err);
-    res.status(500).json({ error: 'Failed to fetch visitors' });
+router.get(
+  "/visitorList",
+  requireAuth,
+  requireRole("admin", "superadmin", "security"),
+  async (req, res) => {
+    try {
+      const visitors = await Visitor.find().sort({ createdAt: -1 });
+      res.json(visitors);
+    } catch (err) {
+      console.error("Fetch visitors error:", err);
+      res.status(500).json({ error: "Failed to fetch visitors" });
+    }
   }
-})
+);
 
 export default router;
