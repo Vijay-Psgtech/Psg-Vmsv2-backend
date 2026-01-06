@@ -23,7 +23,7 @@ import visitorRoutes from "./routes/visitorRoutes.js";
 import securityRoutes from "./routes/securityRoutes.js";
 import reportRoutes from "./routes/reportRoutes.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
-import buildingRoutes from "./routes/buildingRoutes.js";
+import gateRoutes from "./routes/gateRoutes.js";
 import notifyRoutes from "./routes/notifyRoutes.js";
 import twilioWebhook from "./routes/twilioWebhook.js";
 import auditRoutes from "./routes/auditRoutes.js";
@@ -64,15 +64,15 @@ app.use(express.urlencoded({ extended: true }));
 
 /* ----------------------------------------------------------- */
 /* RATE LIMIT */
-app.use(
-  "/api/",
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 200,
-    standardHeaders: true,
-    legacyHeaders: false,
-  })
-);
+// app.use(
+//   "/api/",
+//   rateLimit({
+//     windowMs: 15 * 60 * 1000,
+//     max: 200,
+//     standardHeaders: true,
+//     legacyHeaders: false,
+//   })
+// );
 
 /* ----------------------------------------------------------- */
 /* 🔥 SOCKET.IO — SINGLE INSTANCE */
@@ -143,7 +143,7 @@ app.use("/api/visitor", visitorRoutes);
 app.use("/api/security", securityRoutes);
 app.use("/api/reports", reportRoutes);
 app.use("/api/employees", employeeRoutes);
-app.use("/api/buildings", buildingRoutes);
+app.use("/api/gates", gateRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/notify", notifyRoutes);
 app.use("/api/admin", adminRoutes);
