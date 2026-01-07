@@ -1035,4 +1035,19 @@ router.get(
   }
 );
 
+router.get("/visitorsbyHostEmail/",requireAuth,
+  requireRole("admin", "superadmin", "security"), async (req, res) => {
+  try {
+    const { hostEmail } = req.query;
+    const visitor = await Visitor.find({ hostEmail });
+    if (!visitor) {
+      return res.status(404).json({ message: "Visitor not found" });
+    }
+    res.json(visitor);
+    console.log("Visitors fetched for hostEmail:", hostEmail);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+})
+
 export default router;
