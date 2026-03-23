@@ -345,7 +345,7 @@ router.get("/by-host", requireAuth, async (req, res) => {
  */
 router.get("/check/:id", async (req, res) => {
   try {
-    const visitor = await Visitor.findById(req.params.id);
+    const visitor = await Visitor.findOne({ visitorId: req.params.id });
 
     if (!visitor) {
       return res.status(404).json({
