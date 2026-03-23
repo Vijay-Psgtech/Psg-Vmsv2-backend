@@ -16,3 +16,4 @@ const auditLogSchema = new mongoose.Schema(
 );
 
 export default mongoose.model("AuditLog", auditLogSchema);
+

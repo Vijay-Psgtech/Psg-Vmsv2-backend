@@ -1,219 +1,335 @@
-// routes/superAdminRoutes.js
+/**
+ * SUPER ADMIN ROUTES - PRODUCTION FIXED
+ * File: backend/routes/superAdminRoutes.js
+ *
+ * FIXES APPLIED:
+ * 1. Added GET /api/superadmin/hostadmins - SuperAdmin dashboard was fetching this
+ * 2. Added POST /api/superadmin/hostadmins - create host admin from SuperAdmin dashboard
+ * 3. Added DELETE /api/superadmin/hostadmins/:id
+ * 4. Added PATCH /api/superadmin/hostadmins/:id/toggle-status
+ * 5. Statistics endpoint now includes host admin count
+ * 6. requireRole now accepts array properly
+ */
+
 import express from "express";
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
+import HostAdmin from "../models/HostAdminFixed.js";
 import Visitor from "../models/Visitor.js";
 import Alert from "../models/Alert.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-/* =========================================================
-   GET ALL USERS (Super Admin Only)
-========================================================= */
-router.get("/users", requireAuth, requireRole("superadmin", "admin"), async (req, res) => {
+// Apply auth to all routes in this router
+router.use(requireAuth);
+router.use(requireRole(["superadmin", "admin"]));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// USER MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+router.get("/users", async (req, res) => {
   try {
     const users = await User.find()
-      .select("-password")
+      .select("-password -otp -otpExpiry -twoFactorSecret -resetPasswordToken")
       .sort({ createdAt: -1 });
-
-    res.json(users);
+    res.json({ success: true, data: users, users });
   } catch (err) {
     console.error("Get users error:", err);
-    res.status(500).json({ message: "Failed to fetch users" });
+    res.status(500).json({ success: false, message: "Failed to fetch users" });
   }
 });
 
-/* =========================================================
-   CREATE NEW USER (Super Admin Only)
-========================================================= */
-router.post("/users", requireAuth, requireRole("superadmin", "admin"), async (req, res) => {
+router.post("/users", async (req, res) => {
   try {
     const { name, email, phone, password, role, department, gateId, isActive } = req.body;
 
-    // Validation
     if (!name || !email || !password || !role) {
-      return res.status(400).json({ message: "Missing required fields" });
+      return res.status(400).json({ success: false, message: "Missing required fields" });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
     if (existingUser) {
-      return res.status(400).json({ message: "Email already registered" });
+      return res.status(409).json({ success: false, message: "Email already registered" });
     }
 
-    // Role-specific validation
     if (role === "security" && !gateId) {
-      return res.status(400).json({ message: "Gate ID required for security role" });
+      return res.status(400).json({ success: false, message: "Gate ID required for security role" });
     }
 
     if (role === "admin" && !department) {
-      return res.status(400).json({ message: "Department required for admin role" });
+      return res.status(400).json({ success: false, message: "Department required for admin role" });
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user
     const user = await User.create({
-      name,
-      email,
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
       phone: phone || "",
       password: hashedPassword,
       role,
       department: department || "",
-      gateId: gateId || "",
+      gateId: gateId || null,
       isActive: isActive !== false,
-      createdBy: req.user.id,
+      isVerified: true,
+      createdBy: req.user._id,
     });
 
-    // Add to history
-    user.history = user.history || [];
-    user.history.push({
-      action: "USER_CREATED",
-      by: req.user.id,
-      at: new Date(),
-      note: `Created by ${req.user.name}`,
-    });
-
+    user.addHistory("USER_CREATED", req.user._id, `Created by ${req.user.email}`);
     await user.save();
 
-    // Return user without password
     const userResponse = user.toObject();
     delete userResponse.password;
 
-    res.status(201).json({
-      success: true,
-      message: "User created successfully",
-      user: userResponse,
-    });
+    res.status(201).json({ success: true, message: "User created successfully", data: userResponse, user: userResponse });
   } catch (err) {
     console.error("Create user error:", err);
-    res.status(500).json({ message: "Failed to create user" });
+    res.status(500).json({ success: false, message: "Failed to create user" });
   }
 });
 
-/* =========================================================
-   UPDATE USER (Super Admin Only)
-========================================================= */
-router.put("/users/:id", requireAuth, requireRole("superadmin", "admin"), async (req, res) => {
+router.put("/users/:id", async (req, res) => {
   try {
     const { name, email, phone, department, gateId, isActive } = req.body;
 
     const user = await User.findById(req.params.id);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    // Update fields
-    if (name) user.name = name;
-    if (email) user.email = email;
-    if (phone !== undefined) user.phone = phone;
+    if (name) user.name = name.trim();
+    if (email) user.email = email.toLowerCase().trim();
+    if (phone !== undefined) user.phone = phone || "";
     if (department !== undefined) user.department = department;
     if (gateId !== undefined) user.gateId = gateId;
     if (isActive !== undefined) user.isActive = isActive;
 
-    // Add to history
-    user.history = user.history || [];
-    user.history.push({
-      action: "USER_UPDATED",
-      by: req.user.id,
-      at: new Date(),
-      note: `Updated by ${req.user.name}`,
-    });
-
+    user.addHistory("USER_UPDATED", req.user._id, `Updated by ${req.user.email}`);
     await user.save();
 
-    // Return user without password
     const userResponse = user.toObject();
     delete userResponse.password;
 
-    res.json({
-      success: true,
-      message: "User updated successfully",
-      user: userResponse,
-    });
+    res.json({ success: true, message: "User updated successfully", data: userResponse });
   } catch (err) {
     console.error("Update user error:", err);
-    res.status(500).json({ message: "Failed to update user" });
+    res.status(500).json({ success: false, message: "Failed to update user" });
   }
 });
 
-/* =========================================================
-   DELETE USER (Super Admin Only)
-========================================================= */
-router.delete("/users/:id", requireAuth, requireRole("superadmin", "admin"), async (req, res) => {
+router.delete("/users/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    if (user._id.toString() === req.user._id.toString()) {
+      return res.status(400).json({ success: false, message: "Cannot delete your own account" });
     }
 
-    // Prevent deleting yourself
-    if (user._id.toString() === req.user.id) {
-      return res.status(400).json({ message: "Cannot delete your own account" });
-    }
-
-    // Prevent deleting super admin
     if (user.role === "superadmin") {
-      return res.status(403).json({ message: "Cannot delete super admin account" });
+      return res.status(403).json({ success: false, message: "Cannot delete superadmin account" });
     }
 
     await User.findByIdAndDelete(req.params.id);
-
-    res.json({
-      success: true,
-      message: "User deleted successfully",
-    });
+    res.json({ success: true, message: "User deleted successfully" });
   } catch (err) {
     console.error("Delete user error:", err);
-    res.status(500).json({ message: "Failed to delete user" });
+    res.status(500).json({ success: false, message: "Failed to delete user" });
   }
 });
 
-/* =========================================================
-   TOGGLE USER STATUS (Super Admin Only)
-========================================================= */
-router.patch(
-  "/users/:id/toggle-status",
-  requireAuth,
-  requireRole("superadmin", "admin"),
-  async (req, res) => {
-    try {
-      const { isActive } = req.body;
+router.patch("/users/:id/toggle-status", async (req, res) => {
+  try {
+    const { isActive } = req.body;
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-      const user = await User.findById(req.params.id);
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
-      }
+    user.isActive = isActive !== undefined ? isActive : !user.isActive;
+    user.addHistory(user.isActive ? "USER_ACTIVATED" : "USER_DEACTIVATED", req.user._id, `Status changed by ${req.user.email}`);
+    await user.save();
 
-      user.isActive = isActive;
-      user.history = user.history || [];
-      user.history.push({
-        action: isActive ? "USER_ACTIVATED" : "USER_DEACTIVATED",
-        by: req.user.id,
-        at: new Date(),
-        note: `Status changed by ${req.user.name}`,
-      });
-
-      await user.save();
-
-      res.json({
-        success: true,
-        message: `User ${isActive ? "activated" : "deactivated"} successfully`,
-      });
-    } catch (err) {
-      console.error("Toggle status error:", err);
-      res.status(500).json({ message: "Failed to toggle user status" });
-    }
+    res.json({ success: true, message: `User ${user.isActive ? "activated" : "deactivated"}`, data: { _id: user._id, isActive: user.isActive } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to toggle user status" });
   }
-);
+});
 
-/* =========================================================
-   GET SYSTEM STATISTICS (Super Admin Only)
-========================================================= */
-router.get("/statistics", requireAuth, requireRole("superadmin", "admin"), async (req, res) => {
+router.patch("/users/:id/reset-password", requireRole(["superadmin"]), async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
+    }
+
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.addHistory("PASSWORD_RESET", req.user._id, `Password reset by ${req.user.email}`);
+    await user.save();
+
+    res.json({ success: true, message: "Password reset successfully" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to reset password" });
+  }
+});
+
+router.get("/users/:id/activity", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("history");
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    res.json({ success: true, data: user.history || [] });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to fetch activity" });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HOST ADMIN MANAGEMENT (from SuperAdmin dashboard)
+// FIX: These routes were missing — SuperAdmin dashboard calls /superadmin/hostadmins
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/superadmin/hostadmins
+ * List all host admins
+ */
+router.get("/hostadmins", async (req, res) => {
+  try {
+    const hostAdmins = await HostAdmin.find()
+      .select("-password -otp -otpExpiry")
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, data: hostAdmins, hostAdmins, total: hostAdmins.length });
+  } catch (err) {
+    console.error("Get host admins error:", err);
+    res.status(500).json({ success: false, message: "Failed to fetch host admins" });
+  }
+});
+
+/**
+ * POST /api/superadmin/hostadmins
+ * Create a new host admin — this is the main creation endpoint for SuperAdmin dashboard
+ * FIX: SuperAdmin dashboard was posting here but it didn't exist
+ */
+router.post("/hostadmins", async (req, res) => {
+  try {
+    const { name, email, phone, company, department, password } = req.body;
+
+    if (!name?.trim()) return res.status(400).json({ success: false, message: "Name is required", field: "name" });
+    if (!email?.trim()) return res.status(400).json({ success: false, message: "Email is required", field: "email" });
+    if (!phone?.trim()) return res.status(400).json({ success: false, message: "Phone is required", field: "phone" });
+    if (!company?.trim()) return res.status(400).json({ success: false, message: "Company is required", field: "company" });
+
+    const emailLower = email.toLowerCase().trim();
+
+    // Check both User and HostAdmin collections
+    const existingUser = await User.findOne({ email: emailLower });
+    if (existingUser) {
+      return res.status(409).json({ success: false, message: "Email already registered as a system user" });
+    }
+
+    const existingHost = await HostAdmin.findOne({ email: emailLower });
+    if (existingHost) {
+      return res.status(409).json({ success: false, message: "Host admin with this email already exists" });
+    }
+
+    const hostAdmin = new HostAdmin({
+      name: name.trim(),
+      email: emailLower,
+      phone: phone.trim(),
+      company: company.trim(),
+      department: department?.trim() || "N/A",
+      password: password || undefined,
+      role: "hostadmin",
+      active: true,
+    });
+
+    await hostAdmin.save();
+
+    console.log(`✅ Host admin created by superadmin: ${hostAdmin.email}`);
+
+    res.status(201).json({
+      success: true,
+      message: "Host admin created successfully",
+      data: {
+        _id: hostAdmin._id,
+        name: hostAdmin.name,
+        email: hostAdmin.email,
+        phone: hostAdmin.phone,
+        company: hostAdmin.company,
+        department: hostAdmin.department,
+        role: hostAdmin.role,
+        active: hostAdmin.active,
+        createdAt: hostAdmin.createdAt,
+      },
+    });
+  } catch (err) {
+    console.error("Create host admin error:", err.message);
+    if (err.code === 11000) {
+      return res.status(409).json({ success: false, message: "Email already exists" });
+    }
+    res.status(500).json({ success: false, message: "Failed to create host admin", error: err.message });
+  }
+});
+
+/**
+ * PUT /api/superadmin/hostadmins/:id
+ */
+router.put("/hostadmins/:id", async (req, res) => {
+  try {
+    const { name, phone, company, department, active } = req.body;
+
+    const hostAdmin = await HostAdmin.findByIdAndUpdate(
+      req.params.id,
+      { name, phone, company, department, active },
+      { new: true, runValidators: true }
+    ).select("-password -otp -otpExpiry");
+
+    if (!hostAdmin) return res.status(404).json({ success: false, message: "Host admin not found" });
+
+    res.json({ success: true, message: "Host admin updated", data: hostAdmin });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to update host admin" });
+  }
+});
+
+/**
+ * DELETE /api/superadmin/hostadmins/:id
+ */
+router.delete("/hostadmins/:id", async (req, res) => {
+  try {
+    const hostAdmin = await HostAdmin.findByIdAndDelete(req.params.id);
+    if (!hostAdmin) return res.status(404).json({ success: false, message: "Host admin not found" });
+
+    res.json({ success: true, message: "Host admin deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to delete host admin" });
+  }
+});
+
+/**
+ * PATCH /api/superadmin/hostadmins/:id/toggle-status
+ */
+router.patch("/hostadmins/:id/toggle-status", async (req, res) => {
+  try {
+    const { active } = req.body;
+    const hostAdmin = await HostAdmin.findById(req.params.id);
+    if (!hostAdmin) return res.status(404).json({ success: false, message: "Host admin not found" });
+
+    hostAdmin.active = active !== undefined ? active : !hostAdmin.active;
+    await hostAdmin.save();
+
+    res.json({ success: true, message: `Host admin ${hostAdmin.active ? "activated" : "deactivated"}`, data: { _id: hostAdmin._id, active: hostAdmin.active } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to toggle status" });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STATISTICS
+// ═══════════════════════════════════════════════════════════════════════════
+
+router.get("/statistics", async (req, res) => {
   try {
     const [
       totalUsers,
@@ -221,11 +337,15 @@ router.get("/statistics", requireAuth, requireRole("superadmin", "admin"), async
       adminCount,
       securityCount,
       receptionCount,
+      totalHostAdmins,
+      activeHostAdmins,
       totalVisitors,
       pendingVisitors,
       approvedVisitors,
       insideVisitors,
       overstayVisitors,
+      completedVisitors,
+      rejectedVisitors,
       totalAlerts,
       criticalAlerts,
     ] = await Promise.all([
@@ -234,219 +354,110 @@ router.get("/statistics", requireAuth, requireRole("superadmin", "admin"), async
       User.countDocuments({ role: "admin" }),
       User.countDocuments({ role: "security" }),
       User.countDocuments({ role: "reception" }),
+      HostAdmin.countDocuments(),
+      HostAdmin.countDocuments({ active: true }),
       Visitor.countDocuments(),
       Visitor.countDocuments({ status: "PENDING" }),
       Visitor.countDocuments({ status: "APPROVED" }),
       Visitor.countDocuments({ status: "IN" }),
       Visitor.countDocuments({ status: "OVERSTAY" }),
+      Visitor.countDocuments({ status: "OUT" }),
+      Visitor.countDocuments({ status: "REJECTED" }),
       Alert.countDocuments(),
       Alert.countDocuments({ severity: "CRITICAL" }),
     ]);
 
     res.json({
-      users: {
-        total: totalUsers,
-        active: activeUsers,
-        admin: adminCount,
-        security: securityCount,
-        reception: receptionCount,
-      },
-      visitors: {
-        total: totalVisitors,
-        pending: pendingVisitors,
-        approved: approvedVisitors,
-        inside: insideVisitors,
-        overstay: overstayVisitors,
-      },
-      alerts: {
-        total: totalAlerts,
-        critical: criticalAlerts,
+      success: true,
+      data: {
+        users: { total: totalUsers, active: activeUsers, admin: adminCount, security: securityCount, reception: receptionCount },
+        hostAdmins: { total: totalHostAdmins, active: activeHostAdmins },
+        visitors: { total: totalVisitors, pending: pendingVisitors, approved: approvedVisitors, inside: insideVisitors, overstay: overstayVisitors, completed: completedVisitors, rejected: rejectedVisitors },
+        alerts: { total: totalAlerts, critical: criticalAlerts },
       },
     });
   } catch (err) {
     console.error("Statistics error:", err);
-    res.status(500).json({ message: "Failed to fetch statistics" });
+    res.status(500).json({ success: false, message: "Failed to fetch statistics" });
   }
 });
 
-/* =========================================================
-   GET DEPARTMENTS (Super Admin Only)
-========================================================= */
-router.get("/departments", requireAuth, requireRole("superadmin", "admin"), async (req, res) => {
+// ═══════════════════════════════════════════════════════════════════════════
+// DEPARTMENTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+router.get("/departments", async (req, res) => {
   try {
-    // For now, return static departments
-    // You can create a Department model later
-    const departments = [
-      { _id: "1", name: "Engineering", code: "ENG", description: "Engineering Department" },
-      { _id: "2", name: "Human Resources", code: "HR", description: "HR Department" },
-      { _id: "3", name: "Sales", code: "SALES", description: "Sales Department" },
-      { _id: "4", name: "Marketing", code: "MKT", description: "Marketing Department" },
-      { _id: "5", name: "Operations", code: "OPS", description: "Operations Department" },
-      { _id: "6", name: "Finance", code: "FIN", description: "Finance Department" },
-      { _id: "7", name: "IT Support", code: "IT", description: "IT Support Department" },
-      { _id: "8", name: "Legal", code: "LEGAL", description: "Legal Department" },
-    ];
-
-    res.json(departments);
+    const dbDepts = await User.distinct("department", { department: { $exists: true, $ne: "" } });
+    const defaults = ["Engineering", "Human Resources", "Sales", "Marketing", "Operations", "Finance", "IT Support", "Legal"];
+    const all = [...new Set([...defaults, ...dbDepts])];
+    const departments = all.map((name, i) => ({
+      _id: String(i + 1),
+      name,
+      code: name.split(" ").map((w) => w[0]).join("").toUpperCase(),
+    }));
+    res.json({ success: true, data: departments });
   } catch (err) {
-    console.error("Get departments error:", err);
-    res.status(500).json({ message: "Failed to fetch departments" });
+    res.status(500).json({ success: false, message: "Failed to fetch departments" });
   }
 });
 
-/* =========================================================
-   GET ALL VISITORS (Super Admin Only)
-========================================================= */
-router.get("/visitors", requireAuth, requireRole("superadmin", "admin"), async (req, res) => {
+// ═══════════════════════════════════════════════════════════════════════════
+// VISITORS (for super admin view)
+// ═══════════════════════════════════════════════════════════════════════════
+
+router.get("/visitors", async (req, res) => {
   try {
-    const visitors = await Visitor.find()
-      .sort({ createdAt: -1 })
-      .limit(1000);
-
-    res.json(visitors);
+    const visitors = await Visitor.find().sort({ createdAt: -1 }).limit(1000);
+    res.json({ success: true, data: visitors, visitors });
   } catch (err) {
-    console.error("Get visitors error:", err);
-    res.status(500).json({ message: "Failed to fetch visitors" });
+    res.status(500).json({ success: false, message: "Failed to fetch visitors" });
   }
 });
 
-/* =========================================================
-   GET ALL ALERTS (Super Admin Only)
-========================================================= */
-router.get("/alerts", requireAuth, requireRole("superadmin", "admin"), async (req, res) => {
+// ═══════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+router.get("/alerts", async (req, res) => {
   try {
     const alerts = await Alert.find()
       .populate("visitor", "name visitorId")
       .sort({ createdAt: -1 })
       .limit(500);
-
-    res.json(alerts);
+    res.json({ success: true, data: alerts, alerts });
   } catch (err) {
-    console.error("Get alerts error:", err);
-    res.status(500).json({ message: "Failed to fetch alerts" });
+    res.status(500).json({ success: false, message: "Failed to fetch alerts" });
   }
 });
 
-/* =========================================================
-   GET USER ACTIVITY LOG (Super Admin Only)
-========================================================= */
-router.get(
-  "/users/:id/activity",
-  requireAuth,
-  requireRole("superadmin", "admin"),
-  async (req, res) => {
-    try {
-      const user = await User.findById(req.params.id).select("history");
+// ═══════════════════════════════════════════════════════════════════════════
+// BULK OPERATIONS
+// ═══════════════════════════════════════════════════════════════════════════
 
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
-      }
-
-      res.json(user.history || []);
-    } catch (err) {
-      console.error("Get activity error:", err);
-      res.status(500).json({ message: "Failed to fetch activity log" });
+router.post("/users/bulk-action", requireRole(["superadmin"]), async (req, res) => {
+  try {
+    const { action, userIds } = req.body;
+    if (!action || !Array.isArray(userIds)) {
+      return res.status(400).json({ success: false, message: "Invalid request" });
     }
-  }
-);
 
-/* =========================================================
-   RESET USER PASSWORD (Super Admin Only)
-========================================================= */
-router.patch(
-  "/users/:id/reset-password",
-  requireAuth,
-  requireRole("superadmin"),
-  async (req, res) => {
-    try {
-      const { newPassword } = req.body;
-
-      if (!newPassword || newPassword.length < 6) {
-        return res.status(400).json({ message: "Password must be at least 6 characters" });
-      }
-
-      const user = await User.findById(req.params.id);
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
-      }
-
-      // Hash new password
-      user.password = await bcrypt.hash(newPassword, 10);
-
-      // Add to history
-      user.history = user.history || [];
-      user.history.push({
-        action: "PASSWORD_RESET",
-        by: req.user.id,
-        at: new Date(),
-        note: `Password reset by ${req.user.name}`,
-      });
-
-      await user.save();
-
-      res.json({
-        success: true,
-        message: "Password reset successfully",
-      });
-    } catch (err) {
-      console.error("Reset password error:", err);
-      res.status(500).json({ message: "Failed to reset password" });
+    let result;
+    if (action === "activate") {
+      result = await User.updateMany({ _id: { $in: userIds } }, { $set: { isActive: true } });
+    } else if (action === "deactivate") {
+      result = await User.updateMany({ _id: { $in: userIds } }, { $set: { isActive: false } });
+    } else if (action === "delete") {
+      const filteredIds = userIds.filter((id) => id !== req.user._id.toString());
+      result = await User.deleteMany({ _id: { $in: filteredIds }, role: { $ne: "superadmin" } });
+    } else {
+      return res.status(400).json({ success: false, message: "Invalid action" });
     }
+
+    res.json({ success: true, message: `Bulk ${action} completed`, affected: result.modifiedCount || result.deletedCount });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to perform bulk action" });
   }
-);
-
-/* =========================================================
-   BULK OPERATIONS (Super Admin Only)
-========================================================= */
-router.post(
-  "/users/bulk-action",
-  requireAuth,
-  requireRole("superadmin"),
-  async (req, res) => {
-    try {
-      const { action, userIds } = req.body;
-
-      if (!action || !userIds || !Array.isArray(userIds)) {
-        return res.status(400).json({ message: "Invalid request" });
-      }
-
-      let result;
-
-      switch (action) {
-        case "activate":
-          result = await User.updateMany(
-            { _id: { $in: userIds } },
-            { $set: { isActive: true } }
-          );
-          break;
-
-        case "deactivate":
-          result = await User.updateMany(
-            { _id: { $in: userIds } },
-            { $set: { isActive: false } }
-          );
-          break;
-
-        case "delete":
-          // Prevent deleting yourself
-          const filteredIds = userIds.filter((id) => id !== req.user.id);
-          result = await User.deleteMany({ _id: { $in: filteredIds } });
-          break;
-
-        default:
-          return res.status(400).json({ message: "Invalid action" });
-      }
-
-      res.json({
-        success: true,
-        message: `Bulk ${action} completed`,
-        affected: result.modifiedCount || result.deletedCount,
-      });
-    } catch (err) {
-      console.error("Bulk action error:", err);
-      res.status(500).json({ message: "Failed to perform bulk action" });
-    }
-  }
-);
+});
 
 export default router;

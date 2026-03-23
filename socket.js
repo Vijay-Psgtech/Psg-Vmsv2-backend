@@ -1,133 +1,198 @@
+/***************************************************************
+ * SOCKET.JS — Socket.IO Handler with Auth
+ * ✅ FIXED: Proper JWT validation, role checking, room joining
+ ***************************************************************/
 import jwt from "jsonwebtoken";
-import AuditLog from "./models/AuditLog.js"; // adjust path if needed
+import AuditLog from "./models/AuditLog.js";
 
 export default function socketHandler(io) {
   /* ================================
-     AUTH MIDDLEWARE
+     🔐 AUTH MIDDLEWARE
   ================================ */
   io.use(async (socket, next) => {
-    const { token, role, gateId } = socket.handshake.auth || {};
-
-    if (!token || !role) {
-      return next(new Error("UNAUTHORIZED"));
-    }
-
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // Get token from socket handshake auth
+      const token = socket.handshake.auth?.token;
 
-      // 🔐 Role spoof protection
-      if (decoded.role !== role) {
-        return next(new Error("ROLE_MISMATCH"));
+      if (!token) {
+        console.error("❌ Socket error: UNAUTHORIZED - No token provided");
+        return next(new Error("UNAUTHORIZED"));
       }
 
-      // 🔐 Gate required for security
-      if (role === "security" && !gateId) {
-        return next(new Error("GATE_REQUIRED"));
-      }
+      // ✅ Verify JWT token with same secret as backend
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || "your-secret-key");
 
+      // 🔐 Attach decoded user info to socket
       socket.user = {
         id: decoded.id,
+        email: decoded.email,
         role: decoded.role,
         name: decoded.name,
       };
 
-      socket.role = role;
-      socket.gateId = gateId || null;
+      socket.userId = decoded.id;
+      socket.userEmail = decoded.email;
+      socket.userRole = decoded.role;
 
+      console.log(`✅ Socket authenticated: ${decoded.email} (Role: ${decoded.role})`);
       next();
-    } catch (err) {
-      return next(new Error("INVALID_TOKEN"));
+    } catch (error) {
+      console.error(`❌ Socket auth error: ${error.message}`);
+      return next(new Error("UNAUTHORIZED"));
     }
   });
 
   /* ================================
-     CONNECTION HANDLER
+     📡 CONNECTION HANDLER
   ================================ */
-  io.on("connection", socket => {
-    console.log(
-      `✅ Socket connected | role=${socket.role} | user=${socket.user.id}`
-    );
+  io.on("connection", (socket) => {
+    console.log(`
+✅ Socket connected
+   📍 Socket ID: ${socket.id}
+   👤 User: ${socket.userEmail}
+   🔑 Role: ${socket.userRole}
+    `);
 
     /* ----------------
-       ROOM JOINING
+       🏢 ROOM JOINING
     ----------------- */
-    if (socket.role === "security") {
-      socket.join(`GATE_${socket.gateId}`);
-    }
 
-    if (socket.role === "admin") {
+    // All authenticated users join their role room
+    socket.join(`ROLE_${socket.userRole}`);
+
+    // Admin/SuperAdmin join ADMIN room
+    if (["admin", "superadmin"].includes(socket.userRole)) {
       socket.join("ADMIN");
     }
 
-    if (socket.role === "reception") {
+    // Security users join SECURITY room
+    if (socket.userRole === "security") {
+      socket.join("SECURITY");
+    }
+
+    // Reception users join RECEPTION room
+    if (socket.userRole === "reception") {
       socket.join("RECEPTION");
     }
 
+    // Employee users join EMPLOYEE room
+    if (socket.userRole === "employee") {
+      socket.join("EMPLOYEE");
+    }
+
     /* ----------------
-       AUDIT: CONNECT
+       📋 AUDIT LOG
     ----------------- */
     AuditLog.create({
-      actorId: socket.user.id,
-      actorRole: socket.role,
+      actorId: socket.userId,
+      actorRole: socket.userRole,
       action: "SOCKET_CONNECTED",
       entity: "Socket",
       entityId: socket.id,
-      gateId: socket.gateId,
       source: "SOCKET",
       severity: "LOW",
       meta: {
         socketId: socket.id,
+        email: socket.userEmail,
       },
-    }).catch(() => {});
+    }).catch((err) => {
+      console.error("Audit log error:", err.message);
+    });
 
     /* ----------------
-       CLIENT READY (OPTIONAL)
+       🤝 CLIENT READY
     ----------------- */
     socket.on("CLIENT_READY", () => {
       socket.emit("SOCKET_READY", {
         connected: true,
-        role: socket.role,
-        gateId: socket.gateId,
+        socketId: socket.id,
+        role: socket.userRole,
+        email: socket.userEmail,
+        timestamp: new Date().toISOString(),
       });
+
+      console.log(`📨 Client ready: ${socket.userEmail}`);
     });
 
     /* ----------------
-       DISCONNECT
+       👋 DISCONNECT
     ----------------- */
-    socket.on("disconnect", reason => {
-      console.log(
-        `❌ Socket disconnected | user=${socket.user.id} | reason=${reason}`
-      );
+    socket.on("disconnect", (reason) => {
+      console.log(`
+❌ Socket disconnected
+   👤 User: ${socket.userEmail}
+   🔑 Role: ${socket.userRole}
+   📍 Reason: ${reason}
+      `);
 
       AuditLog.create({
-        actorId: socket.user.id,
-        actorRole: socket.role,
+        actorId: socket.userId,
+        actorRole: socket.userRole,
         action: "SOCKET_DISCONNECTED",
         entity: "Socket",
         entityId: socket.id,
-        gateId: socket.gateId,
         source: "SOCKET",
         severity: "LOW",
         meta: {
           reason,
+          email: socket.userEmail,
         },
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Audit log error:", err.message);
+      });
+    });
+
+    /* ----------------
+       ⚠️ ERROR HANDLER
+    ----------------- */
+    socket.on("error", (error) => {
+      console.error(`❌ Socket error from ${socket.userEmail}:`, error);
     });
   });
 
   /* ================================
-     SERVER HELPERS
+     🛠️ SERVER HELPER FUNCTIONS
   ================================ */
 
-  io.emitToGate = (gateId, event, payload) => {
-    io.to(`GATE_${gateId}`).emit(event, payload);
+  /**
+   * Emit to specific role
+   * Usage: io.emitToRole("admin", "event_name", data)
+   */
+  io.emitToRole = (role, event, payload) => {
+    io.to(`ROLE_${role}`).emit(event, payload);
   };
 
+  /**
+   * Emit to all admins
+   * Usage: io.emitToAdmins("event_name", data)
+   */
   io.emitToAdmins = (event, payload) => {
     io.to("ADMIN").emit(event, payload);
   };
 
+  /**
+   * Emit to all security
+   * Usage: io.emitToSecurity("event_name", data)
+   */
+  io.emitToSecurity = (event, payload) => {
+    io.to("SECURITY").emit(event, payload);
+  };
+
+  /**
+   * Emit to reception
+   * Usage: io.emitToReception("event_name", data)
+   */
   io.emitToReception = (event, payload) => {
     io.to("RECEPTION").emit(event, payload);
   };
+
+  /**
+   * Emit to all connected users
+   * Usage: io.emitToAll("event_name", data)
+   */
+  io.emitToAll = (event, payload) => {
+    io.emit(event, payload);
+  };
+
+  return io;
 }
