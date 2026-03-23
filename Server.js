@@ -1,261 +1,171 @@
-/***************************************************************
- * VPASS — Production Server
- * Author: Sarath Kannan
- * ✅ UPDATED: Added Super Admin Routes, Alert System, Overstay Monitoring
- ***************************************************************/
-import dotenv from "dotenv";
-dotenv.config();
+// server.js - Main Express Server - PRODUCTION FIXED
 import express from "express";
-
-import morgan from "morgan";
-import cors from "cors";
-import helmet from "helmet";
 import mongoose from "mongoose";
+import dotenv from "dotenv";
 import http from "http";
 import { Server } from "socket.io";
-import rateLimit from "express-rate-limit";
-import cron from "node-cron";
-import twilio from "twilio";
 
-/* ROUTES */
+import {
+  securityHeaders,
+  corsConfig,
+  dataSanitization,
+  globalRateLimit,
+  authRateLimit,
+  requestIdMiddleware,
+  loggingMiddleware,
+  errorHandler,
+  notFoundHandler,
+} from "./middleware/Security.js";
+
+import { requireAuth } from "./middleware/auth.js";
 import authRoutes from "./routes/authRoutes.js";
-import visitorRoutes from "./routes/visitorRoutes.js";
-import securityRoutes from "./routes/securityRoutes.js";
-import reportRoutes from "./routes/reportRoutes.js";
-import employeeRoutes from "./routes/employeeRoutes.js";
-import gateRoutes from "./routes/gateRoutes.js";
-import notifyRoutes from "./routes/notifyRoutes.js";
-import twilioWebhook from "./routes/twilioWebhook.js";
-import auditRoutes from "./routes/auditRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
-import alertRoutes from "./routes/alertRoutes.js";
-import superAdminRoutes from "./routes/superAdminRoutes.js"; // ✅ NEW
+import visitorRoutes from "./routes/visitorRoutes.js";
+import hostAdminRoutes from "./routes/Hostadminroutes.js";
+import superAdminRoutes from "./routes/superAdminRoutes.js";
+import notificationRoutes from "./routes/notification.js";
+import securityRoutes from "./routes/securityRoutes.js";
+import User from "./models/User.js";
 
-import "./utils/mailer.js"; // 🔔 INITIALIZE SMTP
+dotenv.config();
 
-/* ✅ Import Overstay Watcher */
-import { startOverstayWatcher } from "./utils/overstayWatcher.js";
-
-/* MODELS */
-import Visitor from "./models/Visitor.js";
-
-/* SOCKET HANDLER */
-import socketHandler from "./socket.js";
-
-/* ----------------------------------------------------------- */
 const app = express();
 const server = http.createServer(app);
 
-/* ----------------------------------------------------------- */
-/* TRUST PROXY (IMPORTANT FOR IP LOGGING) */
-app.set("trust proxy", 1);
-
-/* ----------------------------------------------------------- */
-/* MIDDLEWARE */
-const corsOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173")
-  .split(",")
-  .map((o) => o.trim());
-
-app.use(helmet());
-app.use(morgan("dev"));
-app.use(cors({ origin: corsOrigins, credentials: true }));
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true }));
-
-/* ----------------------------------------------------------- */
-/* RATE LIMIT */
-// app.use(
-//   "/api/",
-//   rateLimit({
-//     windowMs: 15 * 60 * 1000,
-//     max: 200,
-//     standardHeaders: true,
-//     legacyHeaders: false,
-//   })
-// );
-
-/* ----------------------------------------------------------- */
-/* 🔥 SOCKET.IO — SINGLE INSTANCE */
 const io = new Server(server, {
   cors: {
-    origin: corsOrigins,
+    origin: ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
+    methods: ["GET", "POST"],
     credentials: true,
   },
-  transports: ["websocket", "polling"],
-  allowUpgrades: true,
 });
 
-/* 🔌 ATTACH SOCKET TO REQUEST */
-app.use((req, res, next) => {
-  req.io = io;
+// Socket auth middleware
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) return next(new Error("Socket authentication failed: no token"));
   next();
 });
 
-/* 🔌 INITIALIZE SOCKET HANDLER */
-socketHandler(io);
-
-/* ✅ Start Overstay Monitoring with Socket.IO */
-startOverstayWatcher(io);
-console.log("⚠️ Overstay monitoring initialized");
-
-/* ----------------------------------------------------------- */
-/* SOCKET HELPER */
-export const emitVisitorUpdate = async () => {
-  if (mongoose.connection.readyState !== 1) return;
-
-  const visitors = await Visitor.find().sort({ createdAt: -1 }).limit(100);
-
-  io.emit("visitors:update", visitors);
-};
-
-/* ----------------------------------------------------------- */
-/* TWILIO SAFE WRAPPER */
-let twilioClient = null;
-
-function getTwilioClient() {
-  if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
-    return null;
-  }
-
-  if (!twilioClient) {
-    twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-  }
-
-  return twilioClient;
-}
-
-export const safeTwilio = {
-  sendSMS: async (to, message) => {
-    const client = getTwilioClient();
-    if (!client) return;
-    return client.messages.create({
-      body: message,
-      to,
-      from: process.env.TWILIO_SMS_FROM,
-    });
-  },
-};
-
-/* ----------------------------------------------------------- */
-/* ROUTES */
-app.use("/api/auth", authRoutes);
-app.use("/api/visitor", visitorRoutes);
-app.use("/api/security", securityRoutes);
-app.use("/api/reports", reportRoutes);
-app.use("/api/employees", employeeRoutes);
-app.use("/api/gates", gateRoutes);
-app.use("/api/audit", auditRoutes);
-app.use("/api/notify", notifyRoutes);
-app.use("/api/admin", adminRoutes);
-app.use("/api/alert", alertRoutes);
-app.use("/api/superadmin", superAdminRoutes); // ✅ NEW: Super Admin Routes
-
-app.use("/webhook", twilioWebhook);
-
-/* ----------------------------------------------------------- */
-/* ✅ Health Check with More Info */
-app.get("/", (req, res) => {
-  res.json({
-    status: "OK",
-    service: "VPASS Visitor Management API",
-    version: "2.1.0", // ✅ Updated version
-    features: {
-      socketIO: true,
-      overstayMonitoring: true,
-      alertSystem: true,
-      superAdminPanel: true, // ✅ NEW
-    },
-    timestamp: new Date().toISOString(),
+io.on("connection", (socket) => {
+  console.log("🔌 Socket connected:", socket.id);
+  socket.on("disconnect", (reason) => {
+    console.log("❌ Socket disconnected:", socket.id, reason);
   });
 });
 
-/* ----------------------------------------------------------- */
-/* 404 */
-app.use((req, res) => {
-  res.status(404).json({ error: "Route not found" });
-});
+app.set("io", io);
+app.set("etag", false);
 
-/* ----------------------------------------------------------- */
-/* ERROR HANDLER */
-app.use((err, req, res, next) => {
-  console.error("🔥 Server Error:", err);
-  res.status(500).json({
-    error: "Internal Server Error",
-    message: err.message,
-  });
-});
+// =====================================================
+// MIDDLEWARE
+// =====================================================
 
+app.use(securityHeaders());
+app.use(corsConfig());
+app.use(globalRateLimit);
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
+app.use(...dataSanitization());
+app.use(requestIdMiddleware);
+app.use(loggingMiddleware);
 
-// Add this to your server.js for testing
-app.get("/api/test-email", async (req, res) => {
-  const { sendTestEmail } = await import("./utils/mailer.js");
-  const result = await sendTestEmail("sk123Sarath@gmail.com");
-  res.json({ success: result, message: result ? "Email sent!" : "Failed to send" });
-});
+// =====================================================
+// DATABASE
+// =====================================================
 
-/* ----------------------------------------------------------- */
-/* START SERVER */
-const PORT = process.env.PORT || 5000;
-
-async function startServer() {
+const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/vpass");
     console.log("✅ MongoDB connected");
-
-    /* ⏳ AUTO EXPIRE VISITORS (every 15 minutes) */
-    cron.schedule("*/15 * * * *", async () => {
-      if (mongoose.connection.readyState !== 1) return;
-
-      const result = await Visitor.updateMany(
-        {
-          status: { $in: ["APPROVED", "IN"] },
-          qrExpiresAt: { $lt: new Date() },
-        },
-        { $set: { status: "EXPIRED" } }
-      );
-
-      if (result.modifiedCount > 0) {
-        console.log(`⏳ Expired ${result.modifiedCount} visitors`);
-        await emitVisitorUpdate();
-      }
-    });
-
-    /* ✅ Enhanced startup message */
-    server.listen(PORT, () => {
-      console.log(`
-╔════════════════════════════════════════════════╗
-║   🚀 VPASS SERVER RUNNING                      ║
-╠════════════════════════════════════════════════╣
-║   📡 URL: http://localhost:${PORT.toString().padEnd(21)}║
-║   🔌 Socket.IO: ENABLED                        ║
-║   ⚠️  Overstay Monitor: ACTIVE                 ║
-║   🔔 Alert System: READY                       ║
-║   👑 Super Admin: ENABLED                      ║
-╚════════════════════════════════════════════════╝
-      `);
-    });
-  } catch (err) {
-    console.error("❌ Startup failed:", err.message);
+  } catch (error) {
+    console.error("❌ MongoDB connection error:", error.message);
     process.exit(1);
   }
-}
+};
+connectDB();
 
-startServer();
+// =====================================================
+// ROUTES
+// =====================================================
 
-/* ----------------------------------------------------------- */
-/* GRACEFUL SHUTDOWN */
+// Auth routes (rate limited)
+app.use("/api/auth", authRateLimit, authRoutes);
+
+// Verify token endpoint
+app.post("/api/auth/verify", requireAuth, (req, res) => {
+  res.json({ success: true, message: "Token valid", user: req.user });
+});
+
+// Get current user
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("-password");
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    res.json({ success: true, user });
+  } catch {
+    res.status(500).json({ success: false, message: "Error fetching user" });
+  }
+});
+
+// Core API routes
+app.use("/api/visitor", visitorRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/hostadmin", hostAdminRoutes);
+app.use("/api/superadmin", superAdminRoutes);  // FIX: was missing
+app.use("/api/notification", notificationRoutes);
+app.use("/api/security", securityRoutes);
+
+// Health check
+app.get("/health", (req, res) => {
+  res.json({ status: "OK", timestamp: new Date().toISOString(), uptime: process.uptime() });
+});
+
+// =====================================================
+// ERROR HANDLING
+// =====================================================
+
+app.use(notFoundHandler);
+app.use(errorHandler);
+
+// =====================================================
+// START SERVER
+// =====================================================
+
+const PORT = process.env.PORT || 5000;
+const NODE_ENV = process.env.NODE_ENV || "development";
+
+server.listen(PORT, () => {
+  console.log(`
+╔══════════════════════════════════════════════════╗
+║         VPASS Security Dashboard API             ║
+║                                                  ║
+║  🚀 Server: http://localhost:${PORT}              ║
+║  🔌 Socket.IO: Enabled                           ║
+║  🌍 Environment: ${NODE_ENV}                     ║
+║                                                  ║
+║  API Routes:                                     ║
+║  POST /api/auth/login                            ║
+║  POST /api/auth/send-otp                         ║
+║  POST /api/auth/verify-otp                       ║
+║  GET  /api/visitor                               ║
+║  POST /api/visitor                               ║
+║  POST /api/visitor/:id/approve                   ║
+║  POST /api/visitor/:id/checkin                   ║
+║  POST /api/visitor/:id/checkout                  ║
+║  GET  /api/hostadmin                             ║
+║  POST /api/hostadmin                             ║
+║  GET  /api/superadmin/statistics                 ║
+║  GET  /api/superadmin/hostadmins                 ║
+║  POST /api/superadmin/hostadmins                 ║
+╚══════════════════════════════════════════════════╝
+  `);
+});
+
 process.on("SIGINT", async () => {
-  console.log("\n🛑 Shutting down gracefully...");
-  await mongoose.disconnect();
-  io.close();
-  server.close(() => {
-    console.log("✅ Server closed");
-    process.exit(0);
-  });
+  console.log("\n📴 Shutting down gracefully...");
+  await mongoose.connection.close();
+  process.exit(0);
 });
 
-/* ✅ Handle uncaught errors */
-process.on("unhandledRejection", (err) => {
-  console.error("❌ Unhandled Rejection:", err);
-  process.exit(1);
-});
+export default app;

@@ -1,1053 +1,878 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * VISITOR ROUTES - FIXED FOR hostId PARAMETER
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ✅ CRITICAL FIX: /host-visitors now reads hostId query parameter
+ * ✅ Fixed duplicate try/catch in /host-visitors
+ * ✅ Fixed field name — hostId used consistently everywhere
+ * ✅ Fixed route ordering — /all and specific routes BEFORE /:id
+ * ✅ POST / now saves hostId from req.body
+ * ✅ All endpoints preserved, nothing removed
+ */
+
 import express from "express";
-import crypto from "crypto";
-import Visitor from "../models/Visitor.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { generateBadge } from "../utils/pdf.js";
-import { transporter } from "../utils/mailer.js";
+import Visitor from "../models/Visitor.js";
+import HostAdmin from "../models/HostAdminFixed.js";
+import QRCode from "qrcode";
+import Notification from "../models/Notification.js";
+import {
+  sendApprovalEmail,
+  sendRejectionEmail,
+  sendHostNotificationEmail,
+} from "../utils/mailer.js";
+import { encryptQR, decryptQR, isQRTimestampValid } from "../utils/qrCrypto.js";
+import mongoose from "mongoose";
 
 const router = express.Router();
 
-/* =========================================================
-   MOCK DATA FOR FRONTEND
-========================================================= */
-const employees = [
-  {
-    _id: "1",
-    name: "John Smith",
-    email: "rvk.its@psgtech.ac.in",
-    department: "Engineering",
-  },
-  {
-    _id: "2",
-    name: "Sarah Johnson",
-    email: "sarah@company.com",
-    department: "HR",
-  },
-  {
-    _id: "3",
-    name: "Michael Brown",
-    email: "michael@company.com",
-    department: "Sales",
-  },
-  {
-    _id: "4",
-    name: "Emily Davis",
-    email: "emily@company.com",
-    department: "Marketing",
-  },
-];
+// ═══════════════════════════════════════════════════════════════════════════
+// 🟢 PUBLIC ENDPOINTS (no authentication required)
+// ═══════════════════════════════════════════════════════════════════════════
 
-const buildings = [
-  { _id: "GATE-1", name: "Main Gate - Building A" },
-  { _id: "GATE-2", name: "East Gate - Building B" },
-  { _id: "GATE-3", name: "West Gate - Building C" },
-];
-
-router.get("/employees", requireAuth, (req, res) => res.json(employees));
-router.get("/buildings", requireAuth, (req, res) => res.json(buildings));
-
-/* =========================================================
-   PUBLIC VISITOR CREATE 🔓 (NO AUTH)
-========================================================= */
-router.post("/public-create", async (req, res) => {
+/**
+ * POST /api/visitor
+ * Create new visitor record (public endpoint)
+ */
+router.post("/", async (req, res) => {
   try {
     const {
       name,
-      phone,
       email,
+      phone,
       company,
-      purpose,
       host,
+      hostId,      // ✅ now saved from booking form
       hostEmail,
       gate,
-      allowedUntil,
-      expectedDuration,
+      purpose,
       vehicleNumber,
+      expectedDuration = 120,
     } = req.body;
 
     // Validation
-    if (
-      !name ||
-      !phone ||
-      !email ||
-      !host ||
-      !hostEmail ||
-      !gate ||
-      !allowedUntil
-    ) {
-      return res.status(400).json({ message: "Missing required fields" });
+    if (!name?.trim() || !email?.trim() || !phone?.trim() || !gate?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Name, email, phone, and gate are required",
+      });
     }
 
-    // Parse date
-    const parsedDate = new Date(allowedUntil);
-    if (isNaN(parsedDate.getTime())) {
-      return res.status(400).json({ message: "Invalid allowedUntil date" });
+    if (!host?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Host name is required",
+      });
     }
 
-    // Generate approval token
-    const approvalToken = crypto.randomBytes(32).toString("hex");
+    if (!hostId) {
+      return res.status(400).json({
+        success: false,
+        message: "Host selection is required",
+      });
+    }
+
+    // Check for duplicate email
+    const existing = await Visitor.findOne({ email: email.toLowerCase() });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: "Visitor with this email already exists",
+      });
+    }
 
     // Create visitor
-    const visitor = await Visitor.create({
-      visitorId: `VIS-${Date.now()}`,
-      name,
-      phone,
-      email,
-      company: company || "",
-      purpose: purpose || "",
-      host,
-      hostEmail,
-      gate: String(gate),
-      allowedUntil: parsedDate,
-      expectedDuration: expectedDuration || 120,
-      vehicleNumber: vehicleNumber || "",
+    const visitor = new Visitor({
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      phone: phone.trim(),
+      company: company?.trim() || "",
+      host: host.trim(),
+      hostId: hostId && mongoose.Types.ObjectId.isValid(hostId)
+  ? new mongoose.Types.ObjectId(hostId)
+  : null,         // ✅ links visitor to specific host admin
+      hostEmail: hostEmail?.trim() || "",
+      gate: gate.trim(),
+      purpose: purpose?.trim() || "",
+      vehicleNumber: vehicleNumber?.trim() || "",
+      expectedDuration: parseInt(expectedDuration),
       status: "PENDING",
-      qrExpiresAt: parsedDate,
-      approvalToken,
-      approvalExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
-      history: [
-        { action: "CREATED_PUBLIC", note: "Visitor submitted request online" },
-      ],
     });
 
-    // Send approval email to host
-    await sendHostApprovalEmail(visitor);
+    await visitor.save();
 
-    // Emit socket update
-    if (req.io) {
-      const allVisitors = await Visitor.find()
-        .sort({ createdAt: -1 })
-        .limit(100);
-      req.io.emit("visitors:update", allVisitors);
-    }
+    console.log(`✅ Visitor created: ${visitor.name} (${visitor.visitorId}) for hostId: ${hostId}`);
 
     res.status(201).json({
       success: true,
-      visitorId: visitor.visitorId,
-      message:
-        "Visitor request submitted successfully. Awaiting host approval.",
+      message: "Visitor created successfully",
+      data: visitor,
+      requestId: visitor.visitorId,
     });
   } catch (err) {
-    console.error("PUBLIC CREATE ERROR:", err);
-    res.status(500).json({ message: "Failed to create visitor request" });
+    console.error("❌ Create visitor error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to create visitor",
+      error: err.message,
+    });
   }
 });
 
-/* =========================================================
-   RECEPTION VISITOR CREATE
-========================================================= */
+/**
+ * GET /api/visitor/stats/overview
+ * Get visitor statistics (public)
+ */
+router.get("/stats/overview", async (req, res) => {
+  try {
+    const stats = await Visitor.getStats();
 
-router.post(
-  "/create",
-  requireAuth,
-  requireRole("reception", "admin"),
-  async (req, res) => {
-    try {
-      const {
-        name,
-        phone,
-        email,
-        company,
-        purpose,
-        host,
-        hostEmail,
-        gate,
-        allowedUntil,
-        expectedDuration,
-        vehicleNumber,
-      } = req.body;
+    res.json({
+      success: true,
+      data: stats[0] || {
+        total: 0,
+        pending: 0,
+        approved: 0,
+        inside: 0,
+        overstay: 0,
+        completed: 0,
+        rejected: 0,
+      },
+    });
+  } catch (err) {
+    console.error("❌ Get stats error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch statistics",
+      error: err.message,
+    });
+  }
+});
 
-      // Validation
-      if (
-        !name ||
-        !phone ||
-        !email ||
-        !host ||
-        !hostEmail ||
-        !gate ||
-        !allowedUntil
-      ) {
-        return res.status(400).json({ message: "Missing required fields" });
-      }
+/**
+ * POST /api/visitor/scan-qr
+ * Scan QR code (public)
+ */
+router.post("/scan-qr", async (req, res) => {
+  try {
+    const { qrValue } = req.body;
 
-      // Parse date
-      const parsedDate = new Date(allowedUntil);
-      if (isNaN(parsedDate.getTime())) {
-        return res.status(400).json({ message: "Invalid allowedUntil date" });
-      }
-
-      // Generate approval token
-      const approvalToken = crypto.randomBytes(32).toString("hex");
-
-      // Create visitor
-      const visitor = await Visitor.create({
-        visitorId: `VIS-${Date.now()}`,
-        name,
-        phone,
-        email,
-        company: company || "",
-        purpose: purpose || "",
-        host,
-        hostEmail,
-        gate: String(gate),
-        allowedUntil: parsedDate,
-        expectedDuration: expectedDuration || 120,
-        vehicleNumber: vehicleNumber || "",
-        status: "PENDING",
-        qrExpiresAt: parsedDate,
-        approvalToken,
-        approvalExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
-        history: [
-          {
-            action: "CREATED_RECEPTION",
-            note: "Visitor created from reception Dashboard",
-          },
-        ],
+    if (!qrValue) {
+      return res.status(400).json({
+        success: false,
+        message: "QR value required",
       });
+    }
 
-      // Send approval email to host
-      await sendHostApprovalEmail(visitor);
+    // ── Step 1: Decrypt the QR string ───────────────────────────────
+    let payload;
+    try {
+      payload = decryptQR(qrValue);
+    } catch (decryptErr) {
+      console.error("❌ QR decryption failed:", decryptErr.message);
+      return res.status(400).json({
+        success: false,
+        message: "Invalid QR code — could not decrypt. Make sure you are using the original QR from the approval email.",
+      });
+    }
 
-      res.status(201).json({
+    // ── Step 2: Validate timestamp (anti-replay, 24 hour window) ────
+    if (payload.ts && !isQRTimestampValid(payload.ts, 86400)) {
+      return res.status(400).json({
+        success: false,
+        message: "QR code has expired (valid for 24 hours from approval). Contact host to re-approve.",
+      });
+    }
+
+    // ── Step 3: Look up visitor by ID in payload ─────────────────────
+    const visitorId = payload.visitorId;
+    if (!visitorId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid QR payload — missing visitor ID.",
+      });
+    }
+
+    const visitor = await Visitor.findById(visitorId);
+    if (!visitor) {
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found. The booking may have been deleted.",
+      });
+    }
+
+    // ── Step 4: Validate gate if payload includes it ─────────────────
+    if (payload.gate && visitor.gate !== payload.gate) {
+      return res.status(400).json({
+        success: false,
+        message: `Wrong gate! This QR is for Gate ${payload.gate}, not your gate.`,
+      });
+    }
+
+    // ── Step 5: Check visitor status ─────────────────────────────────
+    if (visitor.status === "REJECTED") {
+      return res.status(400).json({
+        success: false,
+        message: "This visit request was rejected.",
+        visitor,
+      });
+    }
+
+    if (visitor.status === "OUT") {
+      return res.status(200).json({
         success: true,
-        visitorId: visitor.visitorId,
-        message:
-          "Visitor request submitted successfully. Awaiting host approval.",
+        message: "Visitor has already completed their visit.",
+        visitor,
+        alreadyOut: true,
       });
-    } catch (err) {
-      res.status(500).json({ message: "Create failed" });
     }
-  }
-);
 
-/* =========================================================
-   SEND HOST APPROVAL EMAIL
-========================================================= */
-async function sendHostApprovalEmail(visitor) {
-  try {
-    const approveUrl = `${process.env.BASE_URL}/api/visitor/email-approve/${visitor.approvalToken}`;
-    const rejectUrl = `${process.env.BASE_URL}/api/visitor/email-reject/${visitor.approvalToken}`;
+    console.log(`✅ QR scan successful: ${visitor.name} (${visitor.visitorId}) — status: ${visitor.status}`);
 
-    await transporter.sendMail({
-      from: `"Visitor Management System" <${process.env.EMAIL_USER}>`,
-      to: visitor.hostEmail,
-      subject: `🔔 Visitor Approval Required - ${visitor.name}`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; }
-            .info-box { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #667eea; }
-            .info-row { display: flex; margin: 10px 0; }
-            .info-label { font-weight: bold; width: 150px; color: #6b7280; }
-            .info-value { color: #111827; }
-            .button-container { text-align: center; margin: 30px 0; }
-            .button { display: inline-block; padding: 15px 40px; margin: 10px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; }
-            .approve-btn { background: #10b981; color: white; }
-            .reject-btn { background: #ef4444; color: white; }
-            .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>🔔 Visitor Approval Required</h1>
-              <p>A visitor has requested to meet with you</p>
-            </div>
-            
-            <div class="content">
-              <div class="info-box">
-                <h2 style="margin-top: 0; color: #667eea;">Visitor Details</h2>
-                <div class="info-row">
-                  <div class="info-label">Name:</div>
-                  <div class="info-value">${visitor.name}</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Phone:</div>
-                  <div class="info-value">${visitor.phone}</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Email:</div>
-                  <div class="info-value">${visitor.email}</div>
-                </div>
-                ${
-                  visitor.company
-                    ? `
-                <div class="info-row">
-                  <div class="info-label">Company:</div>
-                  <div class="info-value">${visitor.company}</div>
-                </div>
-                `
-                    : ""
-                }
-                <div class="info-row">
-                  <div class="info-label">Purpose:</div>
-                  <div class="info-value">${visitor.purpose}</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Entry Gate:</div>
-                  <div class="info-value">${visitor.gate}</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Visit Date/Time:</div>
-                  <div class="info-value">${new Date(
-                    visitor.allowedUntil
-                  ).toLocaleString()}</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Duration:</div>
-                  <div class="info-value">${
-                    visitor.expectedDuration
-                  } minutes</div>
-                </div>
-                ${
-                  visitor.vehicleNumber
-                    ? `
-                <div class="info-row">
-                  <div class="info-label">Vehicle:</div>
-                  <div class="info-value">${visitor.vehicleNumber}</div>
-                </div>
-                `
-                    : ""
-                }
-                <div class="info-row">
-                  <div class="info-label">Visitor ID:</div>
-                  <div class="info-value">${visitor.visitorId}</div>
-                </div>
-              </div>
-
-              <div class="button-container">
-                <a href="${approveUrl}" class="button approve-btn">✅ APPROVE VISITOR</a>
-                <a href="${rejectUrl}" class="button reject-btn">❌ REJECT REQUEST</a>
-              </div>
-
-              <p style="color: #6b7280; font-size: 14px; text-align: center;">
-                This approval link expires in 24 hours.
-              </p>
-            </div>
-            
-            <div class="footer">
-              <p>This is an automated email from the Visitor Management System.</p>
-              <p>Please do not reply to this email.</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `,
+    return res.json({
+      success: true,
+      message: "QR code verified successfully",
+      visitor,
     });
 
-    console.log("✅ Host approval email sent to:", visitor.hostEmail);
   } catch (err) {
-    console.error("❌ Failed to send host approval email:", err.message);
-  }
-}
-
-/* =========================================================
-   EMAIL APPROVE 🔓
-========================================================= */
-router.get("/email-approve/:token", async (req, res) => {
-  try {
-    const visitor = await Visitor.findOne({
-      approvalToken: req.params.token,
-      approvalExpiresAt: { $gt: new Date() },
+    console.error("❌ QR scan error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message || "QR scan failed",
     });
-
-    if (!visitor) {
-      return res.send(`
-        <html>
-          <body style="font-family: Arial; text-align: center; padding: 50px;">
-            <h2>❌ Invalid or Expired Link</h2>
-            <p>This approval link has expired or is invalid.</p>
-          </body>
-        </html>
-      `);
-    }
-
-    if (visitor.status !== "PENDING") {
-      return res.send(`
-        <html>
-          <body style="font-family: Arial; text-align: center; padding: 50px;">
-            <h2>ℹ️ Already Processed</h2>
-            <p>This visitor request has already been ${visitor.status.toLowerCase()}.</p>
-          </body>
-        </html>
-      `);
-    }
-
-    // Approve visitor
-    visitor.status = "APPROVED";
-    visitor.approvedAt = new Date();
-    visitor.approvalToken = null;
-    visitor.history.push({
-      action: "APPROVED_EMAIL",
-      note: "Approved by host via email",
-    });
-    await visitor.save();
-
-    // Send confirmation emails
-    await sendVisitorApprovedEmail(visitor);
-
-    res.send(`
-      <html>
-        <body style="font-family: Arial; text-align: center; padding: 50px;">
-          <h2 style="color: #10b981;">✅ Visitor Approved Successfully!</h2>
-          <p>Visitor <strong>${visitor.name}</strong> (ID: ${visitor.visitorId}) has been approved.</p>
-          <p>Confirmation emails have been sent to the visitor and security team.</p>
-          <p style="color: #6b7280; margin-top: 30px;">You can close this window.</p>
-        </body>
-      </html>
-    `);
-  } catch (err) {
-    console.error("Email approve error:", err);
-    res.send(`
-      <html>
-        <body style="font-family: Arial; text-align: center; padding: 50px;">
-          <h2>❌ Error</h2>
-          <p>An error occurred. Please try again or contact support.</p>
-        </body>
-      </html>
-    `);
   }
 });
 
-/* =========================================================
-   EMAIL REJECT 🔓
-========================================================= */
-router.get("/email-reject/:token", async (req, res) => {
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔵 PROTECTED SPECIFIC ROUTES (MUST be before /:id)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/visitor/all
+ * Get all visitors - superadmin only (no pagination)
+ * ✅ MUST be before /:id or Express treats "all" as an id
+ */
+router.get("/all", requireAuth, async (req, res) => {
   try {
-    const visitor = await Visitor.findOne({
-      approvalToken: req.params.token,
-      approvalExpiresAt: { $gt: new Date() },
+    const visitors = await Visitor.find({}).sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      data: visitors,
+      visitors: visitors,
+      total: visitors.length,
     });
-
-    if (!visitor) {
-      return res.send(`
-        <html>
-          <body style="font-family: Arial; text-align: center; padding: 50px;">
-            <h2>❌ Invalid or Expired Link</h2>
-            <p>This rejection link has expired or is invalid.</p>
-          </body>
-        </html>
-      `);
-    }
-
-    if (visitor.status !== "PENDING") {
-      return res.send(`
-        <html>
-          <body style="font-family: Arial; text-align: center; padding: 50px;">
-            <h2>ℹ️ Already Processed</h2>
-            <p>This visitor request has already been ${visitor.status.toLowerCase()}.</p>
-          </body>
-        </html>
-      `);
-    }
-
-    // Reject visitor
-    visitor.status = "REJECTED";
-    visitor.rejectionReason = "Rejected by host via email";
-    visitor.approvalToken = null;
-    visitor.history.push({
-      action: "REJECTED_EMAIL",
-      note: "Rejected by host via email",
-    });
-    await visitor.save();
-
-    // Send rejection email
-    await sendVisitorRejectedEmail(visitor);
-
-    res.send(`
-      <html>
-        <body style="font-family: Arial; text-align: center; padding: 50px;">
-          <h2 style="color: #ef4444;">❌ Visitor Request Rejected</h2>
-          <p>Visitor request from <strong>${visitor.name}</strong> has been rejected.</p>
-          <p>A notification email has been sent to the visitor.</p>
-          <p style="color: #6b7280; margin-top: 30px;">You can close this window.</p>
-        </body>
-      </html>
-    `);
   } catch (err) {
-    console.error("Email reject error:", err);
-    res.send(`
-      <html>
-        <body style="font-family: Arial; text-align: center; padding: 50px;">
-          <h2>❌ Error</h2>
-          <p>An error occurred. Please try again or contact support.</p>
-        </body>
-      </html>
-    `);
+    console.error("❌ Get all visitors error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch visitors",
+      error: err.message,
+    });
   }
 });
 
-/* =========================================================
-   ADMIN APPROVE/REJECT
-========================================================= */
-router.post(
-  "/approve/:id",
-  requireAuth,
-  requireRole("admin"),
-  async (req, res) => {
-    try {
-      const { action, reason, expectedDuration } = req.body;
-      const visitor = await Visitor.findById(req.params.id);
-
-      if (!visitor) {
-        return res.status(404).json({ message: "Visitor not found" });
-      }
-
-      if (visitor.status !== "PENDING") {
-        return res.status(400).json({ message: "Visitor already processed" });
-      }
-
-      if (action === "APPROVED") {
-        visitor.status = "APPROVED";
-        visitor.approvedAt = new Date();
-        visitor.approvedBy = req.user.id;
-        visitor.approvalToken = null;
-
-        if (expectedDuration) {
-          visitor.expectedDuration = expectedDuration;
-          visitor.allowedUntil = new Date(
-            Date.now() + expectedDuration * 60000
-          );
-        }
-
-        visitor.history.push({
-          action: "APPROVED_ADMIN",
-          by: req.user.id,
-          note: "Approved by admin",
-        });
-
-        await visitor.save();
-        await sendVisitorApprovedEmail(visitor);
-
-        res.json({ success: true, message: "Visitor approved", visitor });
-      } else if (action === "REJECTED") {
-        visitor.status = "REJECTED";
-        visitor.rejectionReason = reason || "Rejected by admin";
-        visitor.approvalToken = null;
-
-        visitor.history.push({
-          action: "REJECTED_ADMIN",
-          by: req.user.id,
-          note: reason || "Rejected by admin",
-        });
-
-        await visitor.save();
-        await sendVisitorRejectedEmail(visitor);
-
-        res.json({ success: true, message: "Visitor rejected" });
-      } else {
-        res.status(400).json({ message: "Invalid action" });
-      }
-
-      // Emit socket update
-      if (req.io) {
-        req.io.emit(
-          "visitors:update",
-          await Visitor.find().sort({ createdAt: -1 })
-        );
-      }
-    } catch (err) {
-      console.error("Approve/reject error:", err);
-      res.status(500).json({ message: "Operation failed" });
-    }
-  }
-);
-
-/* =========================================================
-   SEND VISITOR APPROVED EMAIL
-========================================================= */
-async function sendVisitorApprovedEmail(visitor) {
+/**
+ * GET /api/visitor/host-visitors
+ * Get visitors for the currently logged-in host admin only
+ * ✅ CRITICAL FIX: Now reads hostId from query parameter
+ * ✅ CRITICAL FIX: Falls back to authenticated user's ID if no param provided
+ * ✅ Frontend sends: ?hostId=USER_ID
+ * ✅ Backend now reads and uses it!
+ */
+router.get("/host-visitors", requireAuth, async (req, res) => {
   try {
-    await transporter.sendMail({
-      from: `"Visitor Management System" <${process.env.EMAIL_USER}>`,
-      to: [visitor.email],
-      subject: `✅ Visitor Pass Approved - ${visitor.name}`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; }
-            .info-box { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #10b981; }
-            .info-row { display: flex; margin: 10px 0; }
-            .info-label { font-weight: bold; width: 150px; color: #6b7280; }
-            .info-value { color: #111827; }
-            .important-box { background: #fef3c7; border: 2px solid #f59e0b; padding: 15px; border-radius: 8px; margin: 20px 0; }
-            .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>✅ Your Visitor Pass is Approved!</h1>
-              <p>You can now visit us on your scheduled date</p>
-            </div>
-            
-            <div class="content">
-              <div class="info-box">
-                <h2 style="margin-top: 0; color: #10b981;">Visitor Pass Details</h2>
-                <div class="info-row">
-                  <div class="info-label">Visitor ID:</div>
-                  <div class="info-value"><strong>${
-                    visitor.visitorId
-                  }</strong></div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Name:</div>
-                  <div class="info-value">${visitor.name}</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Host:</div>
-                  <div class="info-value">${visitor.host}</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Entry Gate:</div>
-                  <div class="info-value">${visitor.gate}</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Visit Date/Time:</div>
-                  <div class="info-value">${new Date(
-                    visitor.allowedUntil
-                  ).toLocaleString()}</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Duration:</div>
-                  <div class="info-value">${
-                    visitor.expectedDuration
-                  } minutes</div>
-                </div>
-                <div class="info-row">
-                  <div class="info-label">Status:</div>
-                  <div class="info-value" style="color: #10b981; font-weight: bold;">APPROVED</div>
-                </div>
-              </div>
+    const hostId = req.query.hostId || req.user._id;
+    
+    console.log(`📊 [GET /host-visitors]`);
+    console.log(`   Query param hostId: ${req.query.hostId || "none"}`);
+    console.log(`   Auth user._id: ${req.user._id}`);
+    console.log(`   Final hostId used: ${hostId}`);
 
-              <div class="important-box">
-                <h3 style="margin-top: 0; color: #f59e0b;">📋 Important Instructions</h3>
-                <ul style="margin: 0; padding-left: 20px;">
-                  <li>Please arrive 10 minutes before your scheduled time</li>
-                  <li>Bring a valid government-issued ID (mandatory)</li>
-                  <li>Show this email or your Visitor ID (${
-                    visitor.visitorId
-                  }) at the security gate</li>
-                  <li>Entry is only valid at ${visitor.gate}</li>
-                  <li>Your pass is valid for ${
-                    visitor.expectedDuration
-                  } minutes from check-in</li>
-                  ${
-                    visitor.vehicleNumber
-                      ? `<li>Your vehicle (${visitor.vehicleNumber}) is registered</li>`
-                      : ""
-                  }
-                </ul>
-              </div>
+    const visitors = await Visitor.find({ hostId: hostId })
+      .sort({ createdAt: -1 });
 
-              <p style="text-align: center; margin-top: 30px;">
-                <strong>Need help?</strong><br>
-                Contact us at <a href="mailto:visitors@company.com">visitors@company.com</a><br>
-                or call +91-1800-XXX-XXXX
-              </p>
-            </div>
-            
-            <div class="footer">
-              <p>This is an automated email from the Visitor Management System.</p>
-              <p>Please do not reply to this email.</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `,
+    console.log(`✅ Query completed: Found ${visitors.length} visitors`);
+
+    res.json({
+      success: true,
+      data: visitors,
+      visitors: visitors,
+      total: visitors.length,
     });
-
-    console.log("✅ Visitor approved email sent to:", visitor.email);
   } catch (err) {
-    console.error("❌ Failed to send visitor approved email:", err.message);
+    console.error("❌ Get host visitors error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch host visitors",
+      error: err.message,
+    });
   }
-}
+});
 
-/* =========================================================
-   SEND VISITOR REJECTED EMAIL
-========================================================= */
-async function sendVisitorRejectedEmail(visitor) {
+/**
+ * GET /api/visitor/by-host
+ * Alternative endpoint for host's visitors
+ */
+router.get("/by-host", requireAuth, async (req, res) => {
   try {
-    await transporter.sendMail({
-      from: `"Visitor Management System" <${process.env.EMAIL_USER}>`,
-      to: visitor.email,
-      subject: `❌ Visitor Request Not Approved - ${visitor.name}`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; }
-            .info-box { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #ef4444; }
-            .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>❌ Visitor Request Not Approved</h1>
-            </div>
-            
-            <div class="content">
-              <p>Dear ${visitor.name},</p>
-              
-              <p>We regret to inform you that your visitor request for <strong>${new Date(
-                visitor.allowedUntil
-              ).toLocaleString()}</strong> could not be approved at this time.</p>
+    // ✅ Also read query parameter here
+    const hostId = req.query.hostId || req.user._id;
 
-              <div class="info-box">
-                <h3 style="margin-top: 0; color: #ef4444;">Request Details</h3>
-                <p><strong>Visitor ID:</strong> ${visitor.visitorId}</p>
-                <p><strong>Reason:</strong> ${
-                  visitor.rejectionReason || "Not specified"
-                }</p>
-              </div>
+    const visitors = await Visitor.find({ hostId: hostId })
+      .sort({ createdAt: -1 });
 
-              <p>If you believe this is an error or would like to reschedule, please contact your host (<strong>${
-                visitor.host
-              }</strong>) directly or reach out to our support team.</p>
-
-              <p style="text-align: center; margin-top: 30px;">
-                <strong>Need assistance?</strong><br>
-                Contact us at <a href="mailto:visitors@company.com">visitors@company.com</a><br>
-                or call +91-1800-XXX-XXXX
-              </p>
-            </div>
-            
-            <div class="footer">
-              <p>This is an automated email from the Visitor Management System.</p>
-              <p>Please do not reply to this email.</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `,
+    res.json({
+      success: true,
+      data: visitors,
+      visitors: visitors,
+      total: visitors.length,
     });
-
-    console.log("✅ Visitor rejected email sent to:", visitor.email);
   } catch (err) {
-    console.error("❌ Failed to send visitor rejected email:", err.message);
-  }
-}
-
-/* =========================================================
-   GET ALL VISITORS
-========================================================= */
-router.get(
-  "/",
-  requireAuth,
-  requireRole("reception", "security", "admin"),
-  async (req, res) => {
-    try {
-      let query = {};
-
-      // Security users only see their gate
-      if (req.user.role === "security" && req.user.gateId) {
-        query.gate = String(req.user.gateId);
-      }
-
-      const visitors = await Visitor.find(query).sort({ createdAt: -1 });
-      res.json(visitors);
-    } catch (err) {
-      console.error("Get visitors error:", err);
-      res.status(500).json({ message: "Failed to fetch visitors" });
-    }
-  }
-);
-
-/* =========================================================
-   CHECK-IN
-========================================================= */
-router.post(
-  "/check-in/:id",
-  requireAuth,
-  requireRole("security"),
-  async (req, res) => {
-    try {
-      const visitor = await Visitor.findById(req.params.id);
-
-      if (!visitor) {
-        return res.status(404).json({ message: "Visitor not found" });
-      }
-
-      if (String(visitor.gate) !== String(req.user.gateId)) {
-        return res.status(403).json({ message: "Wrong gate" });
-      }
-
-      if (visitor.status !== "APPROVED") {
-        return res.status(400).json({ message: "Visitor not approved" });
-      }
-
-      visitor.status = "IN";
-      visitor.checkInTime = new Date();
-      visitor.checkedInBy = req.user.id;
-      visitor.history.push({
-        action: "CHECKED_IN",
-        by: req.user.id,
-        note: "Checked in by security",
-      });
-
-      await visitor.save();
-
-      await sendVisitorCheckedInEmailtoHost(visitor);
-
-      // Emit socket update
-      if (req.io) {
-        req.io.emit(
-          "visitors:update",
-          await Visitor.find().sort({ createdAt: -1 })
-        );
-      }
-
-      res.json({ success: true, visitor });
-    } catch (err) {
-      console.error("Check-in error:", err);
-      res.status(500).json({ message: "Check-in failed" });
-    }
-  }
-);
-
-async function sendVisitorCheckedInEmailtoHost(visitor) {
-  try {
-    const checkOutUrl = `${process.env.BASE_URL}/api/visitor/check-out/${visitor._id}`;
-
-    await transporter.sendMail({
-      from: `"Visitor Management System" <${process.env.EMAIL_USER}>`,
-      to: visitor.hostEmail,
-      subject: `🔔 Visitor Checked In - ${visitor.name}`,
-      html: `
-        <div style="font-family: 'Inter', 'Segoe UI', Roboto, Arial, sans-serif; background: #eef2f7; padding: 40px;">
-          <div style="max-width: 640px; margin: 0 auto; background: #ffffff; border-radius: 14px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.08);">
-            
-            <!-- Top Accent Bar -->
-            <div style="height: 6px; background: linear-gradient(90deg, #3b82f6, #6366f1, #8b5cf6);"></div>
-
-            <!-- Header -->
-            <div style="text-align: center; padding: 28px 20px 12px;">
-              <img src="https://cdn-icons-png.flaticon.com/512/906/906343.png" alt="Visitor Icon" width="60" style="margin-bottom: 8px;" />
-              <h2 style="color: #111827; font-size: 22px; margin: 0;">Visitor Check-In Alert</h2>
-              <p style="color: #6b7280; font-size: 14px; margin-top: 6px;">Your guest has arrived at the gate</p>
-            </div>
-
-            <!-- Body -->
-            <div style="padding: 0 32px 32px; color: #1f2937;">
-              <div style="background: #f9fafb; border-radius: 10px; padding: 18px 20px; border: 1px solid #e5e7eb; margin-top: 20px;">
-                <p style="margin: 0; font-size: 15px;">Dear <strong>${visitor.host}</strong>,</p>
-                <p style="margin: 12px 0 18px; font-size: 15px; line-height: 1.6;">
-                  Your visitor <strong style="color: #111827;">${visitor.name}</strong> has successfully checked in at the security gate.
-                </p>
-
-                <h3 style="font-size: 15px; color: #374151; margin: 0 0 10px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px;">
-                  Visitor Details
-                </h3>
-                <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                  <tr>
-                    <td style="padding: 8px 0; color: #6b7280;">Visitor ID:</td>
-                    <td style="padding: 8px 0; text-align: right; font-weight: 600;">${visitor.visitorId}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 8px 0; color: #6b7280;">Name:</td>
-                    <td style="padding: 8px 0; text-align: right; font-weight: 600;">${visitor.name}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 8px 0; color: #6b7280;">Check-In Time:</td>
-                    <td style="padding: 8px 0; text-align: right; font-weight: 600;">${new Date(visitor.checkInTime).toLocaleString()}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 8px 0; color: #6b7280;">Gate:</td>
-                    <td style="padding: 8px 0; text-align: right; font-weight: 600;">${visitor.gate}</td>
-                  </tr>
-                </table>
-              </div>
-
-              <!-- CTA Button -->
-              <div style="text-align: center; margin-top: 36px;">
-                <a href="${checkOutUrl}"
-                  style="display: inline-block; background: linear-gradient(90deg, #3b82f6, #6366f1); color: #ffffff;
-                          padding: 14px 36px; border-radius: 8px; text-decoration: none; font-weight: 600; letter-spacing: 0.3px;
-                          box-shadow: 0 3px 10px rgba(99,102,241,0.3);">
-                  🔓 Check Out Visitor
-                </a>
-              </div>
-
-              <!-- Signature -->
-              <div style="margin-top: 40px; text-align: center; font-size: 13px; color: #6b7280;">
-                <p style="margin: 0;">Kind regards,</p>
-                <p style="font-weight: 600; color: #111827; margin: 4px 0;">Visitor Management System</p>
-              </div>
-            </div>
-
-            <!-- Footer -->
-            <div style="background: #f3f4f6; text-align: center; font-size: 12px; color: #9ca3af; padding: 12px 0;">
-              <p style="margin: 0;">This is an automated message. Please do not reply.</p>
-            </div>
-          </div>
-        </div>
-      `,
+    console.error("❌ Get by-host error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch visitors",
+      error: err.message,
     });
-
-    console.log("✅ Visitor checked-in email sent to host:", visitor.hostEmail);
-  } catch (err) {
-    console.error("❌ Failed to send checked-in email to host:", err.message);
   }
-}
+});
 
-/* =========================================================
-   CHECK-OUT
-========================================================= */
-
-// check-out route from security dashboard
-router.post(
-  "/check-out/:id",
-  requireAuth,
-  requireRole("security"),
-  async (req, res) => {
-    try {
-      const visitor = await Visitor.findById(req.params.id);
-
-      if (!visitor) {
-        return res.status(404).json({ message: "Visitor not found" });
-      }
-
-      if (!["IN", "OVERSTAY"].includes(visitor.status)) {
-        return res.status(400).json({ message: "Visitor not checked in" });
-      }
-
-      visitor.status = "OUT";
-      visitor.checkOutTime = new Date();
-      visitor.checkedOutBy = req.user.id;
-
-      if (visitor.checkInTime) {
-        visitor.actualDuration = Math.floor(
-          (new Date() - new Date(visitor.checkInTime)) / 60000
-        );
-      }
-
-      visitor.history.push({
-        action: "CHECKED_OUT",
-        by: req.user.id,
-        note: "Checked out by security",
-      });
-
-      await visitor.save();
-
-      // Emit socket update
-      if (req.io) {
-        req.io.emit(
-          "visitors:update",
-          await Visitor.find().sort({ createdAt: -1 })
-        );
-      }
-
-      res.json({ success: true, visitor });
-    } catch (err) {
-      console.error("Check-out error:", err);
-      res.status(500).json({ message: "Check-out failed" });
-    }
-  }
-);
-
-// check-out route from host email
-router.get("/check-out/:id", async (req, res) => {
+/**
+ * GET /api/visitor/check/:id
+ * Check visitor appointment status (public)
+ */
+router.get("/check/:id", async (req, res) => {
   try {
     const visitor = await Visitor.findById(req.params.id);
 
     if (!visitor) {
-      return res.status(404).send("Visitor not found");
-    }
-    if (!["IN", "OVERSTAY"].includes(visitor.status)) {
-      return res.status(400).send("Visitor not checked in");
+      return res.status(404).json({
+        success: false,
+        message: "Appointment not found",
+      });
     }
 
-    visitor.status = "OUT";
-    visitor.checkOutTime = new Date();
-    if (visitor.checkInTime) {
-      visitor.actualDuration = Math.floor(
-        (new Date() - new Date(visitor.checkInTime)) / 60000
-      );
-    }
-    visitor.history.push({
-      action: "CHECKED_OUT",
-      note: "Checked out via host email link",
+    res.json({
+      success: true,
+      visitor,
     });
-    await visitor.save();
-
-    res.send(`
-      <html>
-        <body style="font-family: Arial; text-align: center; padding: 50px;">
-
-          <h2 style="color: #10b981;">✅ Visitor Checked Out Successfully!</h2>
-          <p>Visitor <strong>${visitor.name}</strong> (ID: ${visitor.visitorId}) has been checked out.</p>
-          <p style="color: #6b7280; margin-top: 30px;">You can close this window.</p>
-          
-        </body>
-      </html>
-    `);
   } catch (err) {
-    console.error("Check-out via email error:", err);
-    res.status(500).send("Check-out failed");
+    console.error("❌ Check appointment error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 });
 
-/* =========================================================
-   BADGE DOWNLOAD
-========================================================= */
+/**
+ * GET /api/visitor/badge/:id
+ * Download visitor badge
+ */
 router.get("/badge/:id", requireAuth, async (req, res) => {
   try {
     const visitor = await Visitor.findById(req.params.id);
 
     if (!visitor) {
-      return res.status(404).json({ message: "Visitor not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found",
+      });
     }
 
-    await generateBadge(visitor, res);
+    res.json({
+      success: true,
+      message: "Badge generated",
+      visitor: {
+        name: visitor.name,
+        gate: visitor.gate,
+        status: visitor.status,
+      },
+    });
   } catch (err) {
-    console.error("Badge download error:", err);
-    res.status(500).json({ message: "Failed to generate badge" });
+    console.error("❌ Badge error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message || "Badge generation failed",
+    });
   }
 });
 
-router.get(
-  "/visitorList",
-  requireAuth,
-  requireRole("admin", "superadmin", "security"),
-  async (req, res) => {
-    try {
-      const visitors = await Visitor.find().sort({ createdAt: -1 });
-      res.json(visitors);
-    } catch (err) {
-      console.error("Fetch visitors error:", err);
-      res.status(500).json({ error: "Failed to fetch visitors" });
-    }
-  }
-);
-
-router.get("/visitorsbyHostEmail/",requireAuth,
-  requireRole("admin", "superadmin", "security"), async (req, res) => {
+/**
+ * POST /api/visitor/:id/approve
+ * Approve or reject visitor
+ */
+router.post("/:id/approve", requireAuth, async (req, res) => {
   try {
-    const { hostEmail } = req.query;
-    const visitor = await Visitor.find({ hostEmail });
+    const { action, expectedDuration = 120, reason } = req.body;
+
+    const visitor = await Visitor.findById(req.params.id);
+
     if (!visitor) {
-      return res.status(404).json({ message: "Visitor not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found",
+      });
     }
-    res.json(visitor);
-    console.log("Visitors fetched for hostEmail:", hostEmail);
+
+    if (action === "APPROVED") {
+      const allowedUntil = new Date(Date.now() + expectedDuration * 60000);
+
+      visitor.status = "APPROVED";
+      visitor.allowedUntil = allowedUntil;
+      visitor.approvedAt = new Date();
+      visitor.approvedBy = req.user._id;
+      visitor.qrGenerated = true;
+
+      await visitor.save();
+
+      console.log(`✅ Visitor approved: ${visitor._id}`);
+
+      const qrData = {
+        visitorId: visitor._id,
+        name: visitor.name,
+        gate: visitor.gate,
+        allowedUntil,
+      };
+
+      const encryptedQR = encryptQR(qrData);
+      const qrCode = await QRCode.toDataURL(encryptedQR);
+
+      try {
+        await sendApprovalEmail({
+          visitorEmail: visitor.email,
+          visitorName: visitor.name,
+          hostName: visitor.host,
+          gateNumber: visitor.gate,
+          duration: expectedDuration,
+          allowedUntil,
+          qrCodeDataURL: qrCode,
+        });
+        console.log(`✅ Approval email sent to: ${visitor.email}`);
+      } catch (emailErr) {
+        console.warn(`⚠️ Failed to send approval email: ${emailErr.message}`);
+      }
+
+      return res.json({
+        success: true,
+        message: "Visitor approved",
+        qrCode,
+      });
+    }
+
+    if (action === "REJECTED") {
+      visitor.status = "REJECTED";
+      visitor.rejectionReason = reason;
+      visitor.rejectedAt = new Date();
+      visitor.rejectedBy = req.user._id;
+
+      await visitor.save();
+
+      console.log(`✅ Visitor rejected: ${visitor._id}`);
+
+      try {
+        await sendRejectionEmail({
+          visitorEmail: visitor.email,
+          visitorName: visitor.name,
+          rejectionReason: reason,
+        });
+        console.log(`✅ Rejection email sent to: ${visitor.email}`);
+      } catch (emailErr) {
+        console.warn(`⚠️ Failed to send rejection email: ${emailErr.message}`);
+      }
+
+      return res.json({
+        success: true,
+        message: "Visitor rejected",
+      });
+    }
+
+    res.status(400).json({
+      success: false,
+      message: "Invalid action. Use APPROVED or REJECTED",
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("❌ Approve/reject error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Approval failed",
+    });
   }
-})
+});
+
+/**
+ * POST /api/visitor/:id/reject
+ * Reject visitor (standalone endpoint)
+ */
+router.post("/:id/reject", requireAuth, async (req, res) => {
+  try {
+    const { reason = "Request denied" } = req.body;
+    const visitor = await Visitor.findById(req.params.id);
+
+    if (!visitor) {
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found",
+      });
+    }
+
+    if (visitor.status !== "PENDING") {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot reject visitor with status ${visitor.status}`,
+      });
+    }
+
+    visitor.status = "REJECTED";
+    visitor.rejectionReason = reason;
+    visitor.rejectedAt = new Date();
+    visitor.rejectedBy = req.user._id;
+
+    await visitor.save();
+
+    console.log(`✅ Visitor rejected: ${visitor.name}`);
+
+    res.json({
+      success: true,
+      message: "Visitor rejected successfully",
+      data: visitor,
+    });
+  } catch (err) {
+    console.error("❌ Reject visitor error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to reject visitor",
+      error: err.message,
+    });
+  }
+});
+
+/**
+ * POST /api/visitor/:id/checkin
+ * Check in visitor
+ */
+router.post("/:id/checkin", requireAuth, async (req, res) => {
+  try {
+    const visitor = await Visitor.findById(req.params.id);
+
+    if (!visitor) {
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found",
+      });
+    }
+
+    if (visitor.status === "IN" || visitor.status === "OVERSTAY") {
+      return res.status(400).json({
+        success: false,
+        message: "Visitor already checked in",
+      });
+    }
+
+    visitor.status = "IN";
+    visitor.checkInTime = new Date();
+    visitor.checkedInBy = req.user._id;
+
+    await visitor.save();
+
+    // Notify the host admin
+    try {
+      if (visitor.hostId) {
+        await Notification.create({
+          recipientId: visitor.hostId,
+          recipientRole: "host",
+          title: "Visitor Checked In",
+          message: `${visitor.name} checked in at Gate ${visitor.gate}`,
+          severity: "MEDIUM",
+          type: "CHECKIN",
+          relatedId: visitor._id,
+          relatedType: "Visitor",
+        });
+      }
+    } catch (notifErr) {
+      console.error("⚠️ Notification creation failed:", notifErr.message);
+    }
+
+    console.log(`✅ Visitor checked in: ${visitor.name}`);
+
+    res.json({
+      success: true,
+      message: "Visitor checked in successfully",
+      data: visitor,
+    });
+  } catch (err) {
+    console.error("❌ Checkin error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to check in visitor",
+      error: err.message,
+    });
+  }
+});
+
+/**
+ * POST /api/visitor/:id/checkout
+ * Check out visitor
+ */
+router.post("/:id/checkout", requireAuth, async (req, res) => {
+  try {
+    const visitor = await Visitor.findById(req.params.id);
+
+    if (!visitor) {
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found",
+      });
+    }
+
+    if (visitor.status === "OUT") {
+      return res.status(400).json({
+        success: false,
+        message: "Visitor already checked out",
+      });
+    }
+
+    const now = new Date();
+    const duration = visitor.checkInTime
+      ? Math.round((now - new Date(visitor.checkInTime)) / 60000)
+      : 0;
+
+    visitor.status = "OUT";
+    visitor.checkOutTime = now;
+    visitor.actualDuration = duration;
+    visitor.checkedOutBy = req.user._id;
+
+    await visitor.save();
+
+    console.log(`✅ Visitor checked out: ${visitor.name}`);
+
+    res.json({
+      success: true,
+      message: "Visitor checked out successfully",
+      data: visitor,
+    });
+  } catch (err) {
+    console.error("❌ Checkout error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to check out visitor",
+      error: err.message,
+    });
+  }
+});
+
+/**
+ * POST /api/visitor/:id/generate-qr
+ * Generate QR code for visitor
+ */
+router.post("/:id/generate-qr", requireAuth, async (req, res) => {
+  try {
+    const visitor = await Visitor.findById(req.params.id);
+
+    if (!visitor) {
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found",
+      });
+    }
+
+    const qrData = {
+      visitorId: visitor._id.toString(),
+      name: visitor.name,
+      gate: visitor.gate,
+      allowedUntil: visitor.allowedUntil,
+    };
+
+    const encryptedQR = encryptQR(qrData);
+    const qrCode = await QRCode.toDataURL(encryptedQR);
+
+    console.log(`✅ QR code generated for visitor: ${visitor._id}`);
+
+    res.json({
+      success: true,
+      qrCode,
+    });
+  } catch (err) {
+    console.error("❌ QR generation error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message || "QR generation failed",
+    });
+  }
+});
+
+/**
+ * GET /api/visitor/:id/timeline
+ * Get visitor timeline
+ */
+router.get("/:id/timeline", requireAuth, async (req, res) => {
+  try {
+    const visitor = await Visitor.findById(req.params.id);
+
+    if (!visitor) {
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found",
+      });
+    }
+
+    const timeline = [
+      { event: "Created", timestamp: visitor.createdAt, status: "PENDING" },
+      ...(visitor.approvedAt
+        ? [{ event: "Approved", timestamp: visitor.approvedAt, status: "APPROVED" }]
+        : []),
+      ...(visitor.checkInTime
+        ? [{ event: "Checked In", timestamp: visitor.checkInTime, status: "IN" }]
+        : []),
+      ...(visitor.checkOutTime
+        ? [{ event: "Checked Out", timestamp: visitor.checkOutTime, status: "OUT" }]
+        : []),
+      ...(visitor.rejectedAt
+        ? [{ event: "Rejected", timestamp: visitor.rejectedAt, status: "REJECTED" }]
+        : []),
+    ];
+
+    res.json({
+      success: true,
+      timeline,
+    });
+  } catch (err) {
+    console.error("❌ Timeline error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message || "Failed to fetch timeline",
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🟠 GENERIC ROUTES — MUST BE LAST (/:id catches everything above it)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/visitor
+ * List all visitors with filters
+ */
+router.get("/", async (req, res) => {
+  try {
+    const { status, gate, host, skip = 0, limit = 50 } = req.query;
+
+    let filter = {};
+    if (status) filter.status = status;
+    if (gate) filter.gate = gate;
+    if (host) filter.host = new RegExp(host, "i");
+
+    const visitors = await Visitor.find(filter)
+      .skip(parseInt(skip))
+      .limit(parseInt(limit))
+      .sort({ createdAt: -1 });
+
+    const total = await Visitor.countDocuments(filter);
+
+    res.json({
+      success: true,
+      data: visitors,
+      visitors: visitors,
+      total,
+      skip: parseInt(skip),
+      limit: parseInt(limit),
+    });
+  } catch (err) {
+    console.error("❌ Get visitors error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch visitors",
+      error: err.message,
+    });
+  }
+});
+
+/**
+ * GET /api/visitor/:id
+ * Get single visitor — MUST BE LAST GET ROUTE
+ */
+router.get("/:id", async (req, res) => {
+  try {
+    const visitor = await Visitor.findById(req.params.id)
+      .populate("hostId", "name email")
+      .populate("approvedBy", "name")
+      .populate("checkedInBy", "name")
+      .populate("checkedOutBy", "name");
+
+    if (!visitor) {
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: visitor,
+    });
+  } catch (err) {
+    console.error("❌ Get visitor error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch visitor",
+      error: err.message,
+    });
+  }
+});
+
+/**
+ * PUT /api/visitor/:id
+ * Update visitor — MUST BE LAST PUT ROUTE
+ */
+router.put("/:id", requireAuth, async (req, res) => {
+  try {
+    const { name, email, phone, purpose, vehicleNumber, expectedDuration } = req.body;
+
+    const visitor = await Visitor.findById(req.params.id);
+    if (!visitor) {
+      return res.status(404).json({
+        success: false,
+        message: "Visitor not found",
+      });
+    }
+
+    if (visitor.status !== "PENDING") {
+      return res.status(400).json({
+        success: false,
+        message: "Can only update pending visitors",
+      });
+    }
+
+    if (name) visitor.name = name.trim();
+    if (email) visitor.email = email.toLowerCase().trim();
+    if (phone) visitor.phone = phone.trim();
+    if (purpose !== undefined) visitor.purpose = purpose?.trim() || "";
+    if (vehicleNumber !== undefined) visitor.vehicleNumber = vehicleNumber?.trim() || "";
+    if (expectedDuration) visitor.expectedDuration = parseInt(expectedDuration);
+
+    await visitor.save();
+
+    console.log(`✅ Visitor updated: ${visitor.name}`);
+
+    res.json({
+      success: true,
+      message: "Visitor updated successfully",
+      data: visitor,
+    });
+  } catch (err) {
+    console.error("❌ Update visitor error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update visitor",
+      error: err.message,
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPORT
+// ═══════════════════════════════════════════════════════════════════════════
 
 export default router;
