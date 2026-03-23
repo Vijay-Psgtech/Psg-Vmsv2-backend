@@ -26,18 +26,6 @@ import mongoose from "mongoose";
 
 const router = express.Router();
 
-// Validate any route `:id` parameter to avoid Mongoose Cast errors
-router.param("id", (req, res, next, id) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({
-      success: false,
-      message: "Invalid ID format",
-      invalidId: id,
-    });
-  }
-  next();
-});
-
 // ═══════════════════════════════════════════════════════════════════════════
 // 🟢 PUBLIC ENDPOINTS (no authentication required)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -357,7 +345,7 @@ router.get("/by-host", requireAuth, async (req, res) => {
  */
 router.get("/check/:id", async (req, res) => {
   try {
-    const visitor = await Visitor.findById(req.params.id);
+    const visitor = await Visitor.findOne({ visitorId: req.params.id });
 
     if (!visitor) {
       return res.status(404).json({
