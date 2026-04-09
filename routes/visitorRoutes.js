@@ -42,7 +42,7 @@ router.post("/", async (req, res) => {
       phone,
       company,
       host,
-      hostId,      // ✅ now saved from booking form
+      hostId, // ✅ now saved from booking form
       hostEmail,
       gate,
       purpose,
@@ -88,9 +88,10 @@ router.post("/", async (req, res) => {
       phone: phone.trim(),
       company: company?.trim() || "",
       host: host.trim(),
-      hostId: hostId && mongoose.Types.ObjectId.isValid(hostId)
-  ? new mongoose.Types.ObjectId(hostId)
-  : null,         // ✅ links visitor to specific host admin
+      hostId:
+        hostId && mongoose.Types.ObjectId.isValid(hostId)
+          ? new mongoose.Types.ObjectId(hostId)
+          : null, // ✅ links visitor to specific host admin
       hostEmail: hostEmail?.trim() || "",
       gate: gate.trim(),
       purpose: purpose?.trim() || "",
@@ -101,7 +102,9 @@ router.post("/", async (req, res) => {
 
     await visitor.save();
 
-    console.log(`✅ Visitor created: ${visitor.name} (${visitor.visitorId}) for hostId: ${hostId}`);
+    console.log(
+      `✅ Visitor created: ${visitor.name} (${visitor.visitorId}) for hostId: ${hostId}`,
+    );
 
     res.status(201).json({
       success: true,
@@ -172,7 +175,8 @@ router.post("/scan-qr", async (req, res) => {
       console.error("❌ QR decryption failed:", decryptErr.message);
       return res.status(400).json({
         success: false,
-        message: "Invalid QR code — could not decrypt. Make sure you are using the original QR from the approval email.",
+        message:
+          "Invalid QR code — could not decrypt. Make sure you are using the original QR from the approval email.",
       });
     }
 
@@ -180,7 +184,8 @@ router.post("/scan-qr", async (req, res) => {
     if (payload.ts && !isQRTimestampValid(payload.ts, 86400)) {
       return res.status(400).json({
         success: false,
-        message: "QR code has expired (valid for 24 hours from approval). Contact host to re-approve.",
+        message:
+          "QR code has expired (valid for 24 hours from approval). Contact host to re-approve.",
       });
     }
 
@@ -227,14 +232,15 @@ router.post("/scan-qr", async (req, res) => {
       });
     }
 
-    console.log(`✅ QR scan successful: ${visitor.name} (${visitor.visitorId}) — status: ${visitor.status}`);
+    console.log(
+      `✅ QR scan successful: ${visitor.name} (${visitor.visitorId}) — status: ${visitor.status}`,
+    );
 
     return res.json({
       success: true,
       message: "QR code verified successfully",
       visitor,
     });
-
   } catch (err) {
     console.error("❌ QR scan error:", err);
     res.status(500).json({
@@ -284,14 +290,15 @@ router.get("/all", requireAuth, async (req, res) => {
 router.get("/host-visitors", requireAuth, async (req, res) => {
   try {
     const hostId = req.query.hostId || req.user._id;
-    
+
     console.log(`📊 [GET /host-visitors]`);
     console.log(`   Query param hostId: ${req.query.hostId || "none"}`);
     console.log(`   Auth user._id: ${req.user._id}`);
     console.log(`   Final hostId used: ${hostId}`);
 
-    const visitors = await Visitor.find({ hostId: hostId })
-      .sort({ createdAt: -1 });
+    const visitors = await Visitor.find({ hostId: hostId }).sort({
+      createdAt: -1,
+    });
 
     console.log(`✅ Query completed: Found ${visitors.length} visitors`);
 
@@ -320,8 +327,9 @@ router.get("/by-host", requireAuth, async (req, res) => {
     // ✅ Also read query parameter here
     const hostId = req.query.hostId || req.user._id;
 
-    const visitors = await Visitor.find({ hostId: hostId })
-      .sort({ createdAt: -1 });
+    const visitors = await Visitor.find({ hostId: hostId }).sort({
+      createdAt: -1,
+    });
 
     res.json({
       success: true,
@@ -721,16 +729,40 @@ router.get("/:id/timeline", requireAuth, async (req, res) => {
     const timeline = [
       { event: "Created", timestamp: visitor.createdAt, status: "PENDING" },
       ...(visitor.approvedAt
-        ? [{ event: "Approved", timestamp: visitor.approvedAt, status: "APPROVED" }]
+        ? [
+            {
+              event: "Approved",
+              timestamp: visitor.approvedAt,
+              status: "APPROVED",
+            },
+          ]
         : []),
       ...(visitor.checkInTime
-        ? [{ event: "Checked In", timestamp: visitor.checkInTime, status: "IN" }]
+        ? [
+            {
+              event: "Checked In",
+              timestamp: visitor.checkInTime,
+              status: "IN",
+            },
+          ]
         : []),
       ...(visitor.checkOutTime
-        ? [{ event: "Checked Out", timestamp: visitor.checkOutTime, status: "OUT" }]
+        ? [
+            {
+              event: "Checked Out",
+              timestamp: visitor.checkOutTime,
+              status: "OUT",
+            },
+          ]
         : []),
       ...(visitor.rejectedAt
-        ? [{ event: "Rejected", timestamp: visitor.rejectedAt, status: "REJECTED" }]
+        ? [
+            {
+              event: "Rejected",
+              timestamp: visitor.rejectedAt,
+              status: "REJECTED",
+            },
+          ]
         : []),
     ];
 
@@ -790,6 +822,44 @@ router.get("/", async (req, res) => {
 });
 
 /**
+ * Slot Count logic
+ * date , time and hostId
+ *
+ */
+router.get("/slot-count", async (req, res) => {
+  try {
+    const { date, time, hostId } = req.query;
+
+    if (!date || !time || !hostId) {
+      return res.status(400).json({
+        success: false,
+        message: "Date, time, and hostId are required",
+      });
+    }
+
+    const start = new Date(`${date}T${time}:00`);
+    const end = new Date(start.getTime() + 60 * 60 * 1000); // 1 hour slot
+    const count = await Visitor.countDocuments({
+      hostId,
+      expectedVisitDate: { $gte: start, $lt: end },
+      status: { $in: ["PENDING", "APPROVED", "IN"] },
+    });
+
+    res.json({
+      success: true,
+      count,
+    });
+  } catch (err) {
+    console.error("❌ Slot count error:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get slot count",
+      error: err.message,
+    });
+  }
+});
+
+/**
  * GET /api/visitor/:id
  * Get single visitor — MUST BE LAST GET ROUTE
  */
@@ -828,7 +898,8 @@ router.get("/:id", async (req, res) => {
  */
 router.put("/:id", requireAuth, async (req, res) => {
   try {
-    const { name, email, phone, purpose, vehicleNumber, expectedDuration } = req.body;
+    const { name, email, phone, purpose, vehicleNumber, expectedDuration } =
+      req.body;
 
     const visitor = await Visitor.findById(req.params.id);
     if (!visitor) {
@@ -849,7 +920,8 @@ router.put("/:id", requireAuth, async (req, res) => {
     if (email) visitor.email = email.toLowerCase().trim();
     if (phone) visitor.phone = phone.trim();
     if (purpose !== undefined) visitor.purpose = purpose?.trim() || "";
-    if (vehicleNumber !== undefined) visitor.vehicleNumber = vehicleNumber?.trim() || "";
+    if (vehicleNumber !== undefined)
+      visitor.vehicleNumber = vehicleNumber?.trim() || "";
     if (expectedDuration) visitor.expectedDuration = parseInt(expectedDuration);
 
     await visitor.save();
