@@ -343,6 +343,7 @@ visitorSchema.statics.getStats = async function (filter = {}) {
       $group: {
         _id: null,
         total: { $sum: 1 },
+        today: { $sum: { $cond: [{ $gte: ["$createdAt", new Date(new Date().setHours(0, 0, 0, 0))] }, 1, 0] } },
         pending: { $sum: { $cond: [{ $eq: ["$status", "PENDING"] }, 1, 0] } },
         approved: { $sum: { $cond: [{ $eq: ["$status", "APPROVED"] }, 1, 0] } },
         inside: { $sum: { $cond: [{ $eq: ["$status", "IN"] }, 1, 0] } },
