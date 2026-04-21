@@ -362,6 +362,7 @@ export async function sendHostNotificationEmail({
   gateNumber,
   status,
   duration,
+  purpose, // --- IGNORE PURPOSE FOR NOW ---
 }) {
   try {
     if (!hostEmail || !hostName) {

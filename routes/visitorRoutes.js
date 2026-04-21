@@ -72,6 +72,13 @@ router.post("/", async (req, res) => {
       });
     }
 
+    if(!hostEmail || !hostEmail.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Host email is required",
+      });
+    }
+
     // Check for duplicate email
     const existing = await Visitor.findOne({ email: email.toLowerCase() });
     if (existing) {
@@ -101,6 +108,26 @@ router.post("/", async (req, res) => {
     });
 
     await visitor.save();
+
+    // Notify the host admin of the new visitor via email
+    try {
+      if (hostEmail) {
+        await sendHostNotificationEmail({
+          hostEmail,
+          hostName: host,
+          visitorName: visitor.name,
+          visitorPhone: visitor.phone,
+          gateNumber: visitor.gate,
+          status: visitor.status,
+          duration: visitor.expectedDuration,
+        });
+        console.log(`✅ Host notification email sent to: ${hostEmail}`);
+      }
+    } catch (emailErr) {
+      console.warn(
+        `⚠️ Failed to send host notification email: ${emailErr.message}`,
+      );
+    } 
 
     console.log(
       `✅ Visitor created: ${visitor.name} (${visitor.visitorId}) for hostId: ${hostId}`,
