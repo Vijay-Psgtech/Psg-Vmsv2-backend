@@ -325,6 +325,28 @@ router.patch("/hostadmins/:id/toggle-status", async (req, res) => {
   }
 });
 
+/**
+ * PATCH /api/superadmin/hostadmins/:id/reset-password
+ */
+router.patch("/hostadmins/:id/reset-password", requireRole(["superadmin"]) , async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
+    }
+    
+    const hostAdmin = await HostAdmin.findById(req.params.id);
+    if (!hostAdmin) return res.status(404).json({ success: false, message: "Host admin not found" });
+
+    hostAdmin.password = await bcrypt.hash(newPassword, 10);
+    await hostAdmin.save();
+    
+    res.json({ success: true, message: "Password reset successfully" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to reset password" });
+  }
+})
+
 // ═══════════════════════════════════════════════════════════════════════════
 // STATISTICS
 // ═══════════════════════════════════════════════════════════════════════════
