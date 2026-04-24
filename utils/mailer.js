@@ -397,7 +397,7 @@ export async function sendHostNotificationEmail({
               </tr>
               <tr style="border-bottom:1px solid #e5e7eb">
                 <td style="padding:10px;font-weight:600;color:#666">Gate:</td>
-                <td style="padding:10px;color:#333">Gate ${gateNumber || "N/A"}</td>
+                <td style="padding:10px;color:#333">${gateNumber || "N/A"}</td>
               </tr>
               ${status === "APPROVED" ? `
               <tr>
