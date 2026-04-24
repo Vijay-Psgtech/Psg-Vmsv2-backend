@@ -25,6 +25,7 @@ import hostAdminRoutes from "./routes/Hostadminroutes.js";
 import superAdminRoutes from "./routes/superAdminRoutes.js";
 import notificationRoutes from "./routes/notification.js";
 import securityRoutes from "./routes/securityRoutes.js";
+import gateRoutes from "./routes/gateRoutes.js";
 import User from "./models/User.js";
 
 dotenv.config();
@@ -115,7 +116,7 @@ app.use("/api/hostadmin", hostAdminRoutes);
 app.use("/api/superadmin", superAdminRoutes);  // FIX: was missing
 app.use("/api/notification", notificationRoutes);
 app.use("/api/security", securityRoutes);
-
+app.use("/api/gate", gateRoutes);
 // Health check
 app.get("/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString(), uptime: process.uptime() });
